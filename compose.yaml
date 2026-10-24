@@ -1,0 +1,14 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      APP_ORIGIN: ${APP_ORIGIN:?Set the HTTPS public origin}
+      BOOTSTRAP_TOKEN: ${BOOTSTRAP_TOKEN:-}
+      DATABASE_PATH: /data/life.sqlite
+    volumes:
+      - life-data:/data
+volumes:
+  life-data:
