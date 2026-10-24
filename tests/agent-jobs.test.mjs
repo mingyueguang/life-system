@@ -1,0 +1,44 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtempSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {DatabaseSync} from 'node:sqlite';
+import {migrate} from '../server/migrations.mjs';
+test('v1 migration preserves credentials and data; queue recovery and persistence',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'life-queue-'));process.env.DATABASE_PATH=join(dir,'life.sqlite');
+ const original=new DatabaseSync(process.env.DATABASE_PATH);
+ original.exec(`PRAGMA foreign_keys=ON;
+ CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY);INSERT INTO schema_migrations VALUES(1);
+ CREATE TABLE users(id TEXT PRIMARY KEY,email TEXT,password_hash TEXT,created_at TEXT);INSERT INTO users VALUES('owner','test@example.test','hash','date');
+ CREATE TABLE api_keys(id TEXT PRIMARY KEY,hash TEXT UNIQUE NOT NULL,user_id TEXT NOT NULL REFERENCES users(id),name TEXT NOT NULL,scope TEXT NOT NULL CHECK(scope IN ('read','write')),created_at TEXT NOT NULL,expires_at INTEGER NOT NULL);
+ INSERT INTO api_keys VALUES('old','existing-hash','owner','existing','write','date',9999999999999);`);
+ migrate(original);migrate(original);
+ assert.equal(original.prepare('SELECT hash FROM api_keys WHERE id=?').get('old').hash,'existing-hash');
+ assert.equal(original.prepare('SELECT COUNT(*) n FROM schema_migrations WHERE version=2').get().n,1);
+ assert.equal(original.prepare('PRAGMA integrity_check').get().integrity_check,'ok');original.close();
+ const {db,closeDb}=await import('../server/database.mjs');
+ const {createJob,claimJob,updateJob,listJobs,resolveJob,saveEvent}=await import('../server/agent-jobs.mjs');
+ try{
+  db().prepare('INSERT INTO api_keys VALUES(?,?,?,?,?,?,?)').run('worker','worker-hash','owner','executor','worker','date',9999999999999);
+  const input={target_key_id:'worker',idempotency_key:'test',mode:'simulation',action:'simulation.noop',payload:{}};
+  const j=createJob('owner',input,1000);
+  assert.throws(()=>createJob('owner',{...input,payload:{different:true}},1000),e=>e.status===409);
+  const old=claimJob('owner','worker',{},1000).job;
+  assert.equal(claimJob('owner','worker',{},121001).job,null);
+  assert.equal(listJobs('owner',121001).jobs[0].status,'needs_review');
+  assert.throws(()=>updateJob('owner','worker',j.job_id,'heartbeat',{lease_token:old.lease_token},121001),e=>e.status===409);
+  assert.throws(()=>resolveJob('owner',j.job_id,{decision:'requeue',reason:'unchecked'},121001),e=>e.status===409);
+  resolveJob('owner',j.job_id,{decision:'requeue',reason:'verified no effect',confirmed_no_effect:true},121001);
+  const next=claimJob('owner','worker',{},121002).job;assert.notEqual(old.lease_token,next.lease_token);
+  const result={lease_token:next.lease_token,status:'succeeded',output:{simulated:true,external_effect:false}};
+  assert.throws(()=>updateJob('owner','worker',j.job_id,'result',{...result,lease_token:old.lease_token},121003),e=>e.status===409);
+  assert.throws(()=>updateJob('owner','worker',j.job_id,'result',{...result,output:{external_effect:true}},121003),e=>e.status===400);
+  updateJob('owner','worker',j.job_id,'result',result,121003);
+  assert.equal(updateJob('owner','worker',j.job_id,'result',result,121003).duplicate,true);
+  const event={event_id:'e1',type:'simulation.feedback',data:{done:true}};
+  saveEvent('owner','worker',event);assert.equal(saveEvent('owner','worker',event).duplicate,true);
+  assert.throws(()=>saveEvent('owner','other',event),e=>e.status===409);
+  closeDb();assert.equal(listJobs('owner',121004).jobs[0].status,'succeeded');
+ }finally{closeDb();rmSync(dir,{recursive:true,force:true})}
+});
