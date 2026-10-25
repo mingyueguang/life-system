@@ -12,10 +12,14 @@ test('v1 migration preserves credentials and data; queue recovery and persistenc
  CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY);INSERT INTO schema_migrations VALUES(1);
  CREATE TABLE users(id TEXT PRIMARY KEY,email TEXT,password_hash TEXT,created_at TEXT);INSERT INTO users VALUES('owner','test@example.test','hash','date');
  CREATE TABLE api_keys(id TEXT PRIMARY KEY,hash TEXT UNIQUE NOT NULL,user_id TEXT NOT NULL REFERENCES users(id),name TEXT NOT NULL,scope TEXT NOT NULL CHECK(scope IN ('read','write')),created_at TEXT NOT NULL,expires_at INTEGER NOT NULL);
- INSERT INTO api_keys VALUES('old','existing-hash','owner','existing','write','date',9999999999999);`);
+ INSERT INTO api_keys VALUES('old','existing-hash','owner','existing','write','date',9999999999999);
+ CREATE TABLE records(id TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id),kind TEXT NOT NULL,payload TEXT NOT NULL,version INTEGER NOT NULL DEFAULT 1,updated_at TEXT NOT NULL,deleted INTEGER NOT NULL DEFAULT 0);
+ INSERT INTO records(id,user_id,kind,payload,version,updated_at,deleted) VALUES('legacy-record','owner','sleep','{"date":"2026-10-01","hours":7,"note":""}',3,'2026-10-01T00:00:00.000Z',0);`);
  migrate(original);migrate(original);
  assert.equal(original.prepare('SELECT hash FROM api_keys WHERE id=?').get('old').hash,'existing-hash');
  assert.equal(original.prepare('SELECT COUNT(*) n FROM schema_migrations WHERE version=2').get().n,1);
+ assert.equal(original.prepare('SELECT COUNT(*) n FROM schema_migrations WHERE version=6').get().n,1);
+ assert.equal(original.prepare('SELECT payload FROM records WHERE id=?').get('legacy-record').payload.includes('"hours":7'),true,'v1 records survive to v6');
  assert.equal(original.prepare('PRAGMA integrity_check').get().integrity_check,'ok');original.close();
  const {db,closeDb}=await import('../server/database.mjs');
  const {createJob,claimJob,updateJob,listJobs,resolveJob,saveEvent}=await import('../server/agent-jobs.mjs');

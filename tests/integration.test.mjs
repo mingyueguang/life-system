@@ -122,6 +122,31 @@ test('independent account, API permissions, persistence and conflict protection'
   assert.equal((await req('/api/v1/records',{method:'POST',token:write.data.token,data:provenance})).data.duplicate,true);
   assert.equal((await req('/api/v1/records?id='+provenance.id+'&history=true',{token:write.data.token})).data.history.length,1);
   const malformed=await fetch(`http://127.0.0.1:${port}/api/v1/records`,{method:'POST',headers:{Authorization:'Bearer '+write.data.token,'Content-Type':'application/json'},body:'{"secret":"do-not-echo",}'});const malformedBody=await malformed.json();assert.equal(malformed.status,400);assert.equal(malformedBody.code,'INVALID_JSON');assert.ok(!JSON.stringify(malformedBody).includes('do-not-echo'));
+  // v1.3.0：原始资料、统一档案、复核与过滤（HTTP 层）
+  // 注：此前第 114 行已删除 reader 密钥，本块新建独立的只读密钥用于权限断言。
+  const readOnly=await req('/api/keys',{method:'POST',cookie,data:{name:'reader2',scope:'read',days:90}});assert.equal(readOnly.status,201);
+  const rawReqId=randomUUID(),rawText='混合输入：昨晚睡六小时，跑了两公里';
+  const src=await req('/api/v1/sources',{method:'POST',token:write.data.token,data:{request_id:rawReqId,method:'user_report',original_text:rawText}});assert.equal(src.status,201);assert.ok(src.data.source.id);
+  const shared=src.data.source.id;
+  const srcReadResp=await req('/api/v1/sources',{method:'POST',token:readOnly.data.token,data:{method:'user_report',original_text:'只读密钥不能写'}});assert.equal(srcReadResp.status,403);
+  const sleepRec={request_id:randomUUID(),id:randomUUID(),kind:'sleep',version:0,data:{date:'2026-10-26',hours:6,note:''},source_id:shared,metadata:{source:{method:'user_report',original_text:'昨晚睡六小时'},certainty:'inferred'}};
+  const runRec={request_id:randomUUID(),id:randomUUID(),kind:'exercise',version:0,data:{date:'2026-10-26',title:'跑步',minutes:20,note:''},source_id:shared,metadata:{source:{method:'user_report',original_text:'跑了两公里'}}};
+  assert.equal((await req('/api/v1/records',{method:'POST',token:write.data.token,data:sleepRec})).status,200);
+  assert.equal((await req('/api/v1/records',{method:'POST',token:write.data.token,data:runRec})).status,200);
+  const sourceDetail=await req('/api/v1/sources/'+shared,{token:readOnly.data.token});assert.equal(sourceDetail.data.records.length,2);
+  assert.equal((await req('/api/v1/records?source='+shared,{token:readOnly.data.token})).data.records.length,2);
+  const profileRes=await req('/api/v1/profile',{token:readOnly.data.token});assert.equal(profileRes.status,200);assert.ok(profileRes.data.domains.work&&profileRes.data.domains.fitness&&profileRes.data.domains.diet);assert.ok(profileRes.data.suggested_questions.length>0);assert.ok(profileRes.data.recent_changes.some(x=>x.record_id===sleepRec.id));
+  // 复核：只有网站登录用户可以确认/否定 AI 推断；版本冲突保护
+  assert.equal((await req('/api/v1/records/review',{method:'POST',token:write.data.token,data:{id:sleepRec.id,version:1,decision:'confirm'}})).status,401);
+  assert.equal((await req('/api/v1/records/review',{method:'POST',cookie,data:{id:sleepRec.id,version:1,decision:'confirm'},requestOrigin:'https://attacker.test'})).status,403);
+  const reviewed=await req('/api/v1/records/review',{method:'POST',cookie,data:{id:sleepRec.id,version:1,decision:'confirm'}});assert.equal(reviewed.status,200);assert.equal(reviewed.data.record.metadata.review.status,'confirmed');
+  assert.equal((await req('/api/v1/records/review',{method:'POST',cookie,data:{id:sleepRec.id,version:2,decision:'reject'}})).status,409);
+  // 归档后普通列表排除，原始资料仍列出（审计保留）
+  assert.equal((await req('/api/v1/records',{method:'POST',token:write.data.token,data:{...runRec,request_id:randomUUID(),version:1,deleted:true}})).status,200);
+  assert.equal((await req('/api/v1/records',{cookie})).data.records.length,2,'provenance 与 sleepRec 可见，runRec 已归档');
+  assert.equal((await req('/api/v1/sources/'+shared,{token:readOnly.data.token})).data.records.length,2);
+  // Schema 文档与实现保持同步
+  const schemaDoc=await req('/api/v1/schema',{token:readOnly.data.token});assert.ok(schemaDoc.data.sources.includes('/api/v1/sources'));assert.ok(schemaDoc.data.profile.includes('/api/v1/profile'));assert.ok(schemaDoc.data.review.includes('/api/v1/records/review'));
   const changed=await req('/api/auth/password',{method:'POST',cookie,data:{currentPassword:password,password:'New-long-test-password!'}});assert.equal(changed.status,200);
   assert.equal((await req('/api/v1/records',{cookie:secondCookie})).status,401);
   const newCookie=changed.cookie.split(';')[0];

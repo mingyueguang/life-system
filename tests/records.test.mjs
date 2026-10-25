@@ -26,7 +26,7 @@ test('record provenance, idempotency, corrections, unknown values, history and i
  saveRecord('owner','ai-A',{id:randomUUID(),kind:'profile',version:0,data:{topic:'训练目标',status:'missing'}});assert.equal(readRecords('owner',new URLSearchParams({status:'missing'})).records.length,1);
  assert.throws(()=>saveRecord('owner','ai-A',{id:randomUUID(),kind:'phone_usage',version:0,data:{minutes:1500}}));
  assert.throws(()=>saveRecord('owner','ai-A',{id:randomUUID(),kind:'exercise',version:0,data:{title:'走路'},metadata:{related_ids:[randomUUID()]}}),e=>e.status===400);
- const legacy=randomUUID();db().prepare('INSERT INTO records VALUES(?,?,?,?,?,?,?)').run(legacy,'owner','exercise',JSON.stringify({date:'2026-10-01',title:'散步',minutes:20,steps:0,note:''}),4,'2026-10-01T00:00:00.000Z',0);
+ const legacy=randomUUID();db().prepare('INSERT INTO records(id,user_id,kind,payload,version,updated_at,deleted) VALUES(?,?,?,?,?,?,?)').run(legacy,'owner','exercise',JSON.stringify({date:'2026-10-01',title:'散步',minutes:20,steps:0,note:''}),4,'2026-10-01T00:00:00.000Z',0);
  saveRecord('owner','website',{id:legacy,kind:'exercise',version:4,data:{date:'2026-10-01',title:'散步',minutes:25}});h=readRecords('owner',new URLSearchParams({id:legacy,history:'true'}));assert.deepEqual(h.history.map(x=>x.record.version),[5,4]);assert.equal(h.history[1].record.metadata.source.method,'unknown');
  closeDb();assert.equal(readRecords('owner',new URLSearchParams({id})).record.version,4);
  }finally{closeDb();rmSync(dir,{recursive:true,force:true})}

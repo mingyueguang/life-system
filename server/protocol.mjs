@@ -1,3 +1,4 @@
+import {intakeOutputSchema} from './intake.mjs';
 import {planSchema,analysisSchema,reviewSchema,publishSchema} from './life.mjs';
 export const protocolVersion='1.3.0';
 // Derive the wire schema from the same validators that accept results.
@@ -18,6 +19,7 @@ export function jsonSchema(s){const d=s._def;switch(d.typeName){
  default:throw Error('Unsupported protocol validator: '+d.typeName);
 }}
 const examples={
+ intake:{summary:'已有资料与缺失信息概述，不制定计划',evidence:[],questions:[{field_key:'替换为当前角色提供的字段 key',question:'需要了解的问题',reason:'这个信息影响什么判断'}]},
  analysis:{summary:'基于已有记录的分析',recommendations:['保留机动时间'],missing:[]},
  plan:{summary:'候选安排，请核对可用时间',items:[{id:'123e4567-e89b-42d3-a456-426614174000',title:'具体行动',minutes:30,reason:'与目标的关系',task_id:null}],buffer_minutes:15,deferred:[],missing:['可用时间尚未填写']},
  review:{summary:'当日复盘',observations:['基于实际反馈的观察'],adjustments:['后续调整'],missing:[]},
@@ -25,8 +27,8 @@ const examples={
  simulation:{simulated:true,external_effect:false,executor:'你的身份名称',message:'连接测试完成'}
 };
 export function contract(action){
- const kind=action.startsWith('analysis.')?'analysis':({'daily.plan':'plan','daily.review':'review','feishu.publish':'publish','simulation.noop':'simulation'})[action];
- const s={analysis:analysisSchema,plan:planSchema,review:reviewSchema,publish:publishSchema}[kind];
- return {protocol_version:protocolVersion,output_schema:s?jsonSchema(s):{type:'object',required:['simulated','external_effect'],properties:{simulated:{const:true},external_effect:{const:false}}},success_example:{lease_token:'替换为领取响应中的值',status:'succeeded',output:examples[kind]},rules:kind==='plan'?['事项 ID 必须为 UUID，示例 ID 不可重复使用','关联待办必须存在且未完成','总分钟数加机动时间不得超过已知可用时间','可用时间未知时 missing 必须说明，草案只是候选安排','先核对 context.preflight，过期或疑似完成事项不能当成已确认事实']:[]};
+ const kind=action.startsWith('intake.')?'intake':action.startsWith('analysis.')?'analysis':({'daily.plan':'plan','daily.review':'review','feishu.publish':'publish','simulation.noop':'simulation'})[action];
+ const s={intake:intakeOutputSchema,analysis:analysisSchema,plan:planSchema,review:reviewSchema,publish:publishSchema}[kind];
+ return {protocol_version:protocolVersion,output_schema:s?jsonSchema(s):{type:'object',required:['simulated','external_effect'],properties:{simulated:{const:true},external_effect:{const:false}}},success_example:{lease_token:'替换为领取响应中的值',status:'succeeded',output:examples[kind]},rules:kind==='plan'?['事项 ID 必须为 UUID，示例 ID 不可重复使用','关联待办必须存在且未完成','总分钟数加机动时间不得超过已知可用时间','可用时间未知时 missing 必须说明，草案只是候选安排','核对已有资料和前置分析，过期或疑似完成事项不能当成已确认事实']:[]};
 }
-export function protocol(){return {protocol_version:protocolVersion,guide:'/ai-guide.md?v='+protocolVersion,schema:'/api/agent/v1/protocol',register:{method:'POST',path:'/api/agent/v1/executors/register',example:{name:'平台和账号标识',capabilities:['analysis'],max_parallel:1}},claim:{method:'POST',path:'/api/agent/v1/jobs/claim',example:{}},recover:{method:'GET',path:'/api/agent/v1/jobs/active',note:'仅返回当前密钥仍有效的任务和原租约，不续期、不重新执行外部操作'},heartbeat_interval_seconds:30,actions:Object.fromEntries(['analysis.work','analysis.energy','daily.plan','daily.review','feishu.publish','simulation.noop'].map(a=>[a,contract(a)]))}}
+export function protocol(){return {protocol_version:protocolVersion,guide:'/ai-guide.md?v='+protocolVersion,schema:'/api/agent/v1/protocol',register:{method:'POST',path:'/api/agent/v1/executors/register',example:{name:'平台和账号标识',capabilities:['analysis'],max_parallel:1}},claim:{method:'POST',path:'/api/agent/v1/jobs/claim',example:{}},recover:{method:'GET',path:'/api/agent/v1/jobs/active',note:'仅返回当前密钥仍有效的任务和原租约，不续期、不重新执行外部操作'},heartbeat_interval_seconds:30,actions:Object.fromEntries(['intake.work','intake.fitness','intake.diet','analysis.work','analysis.energy','daily.plan','daily.review','feishu.publish','simulation.noop'].map(a=>[a,contract(a)]))}}

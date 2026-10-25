@@ -40,6 +40,23 @@ export function migrate(database){
     INSERT INTO schema_migrations VALUES(4);
    `);
   }
+  if(!database.prepare('SELECT 1 FROM schema_migrations WHERE version=5').get()){
+   database.exec(`
+    CREATE TABLE intake_fields(user_id TEXT NOT NULL,field_key TEXT NOT NULL,record_id TEXT,record_version INTEGER,deferred INTEGER NOT NULL DEFAULT 0,revision INTEGER NOT NULL DEFAULT 0,evidence TEXT NOT NULL DEFAULT '[]',PRIMARY KEY(user_id,field_key));
+    CREATE TABLE intake_reports(user_id TEXT NOT NULL,domain TEXT NOT NULL,job_id TEXT NOT NULL,context_hash TEXT NOT NULL,body TEXT NOT NULL,updated INTEGER NOT NULL,PRIMARY KEY(user_id,domain));
+    CREATE TABLE intake_requests(user_id TEXT NOT NULL,request_id TEXT NOT NULL,hash TEXT NOT NULL,response TEXT NOT NULL,PRIMARY KEY(user_id,request_id));
+    INSERT INTO schema_migrations VALUES(5);
+   `);
+  }
+  if(!database.prepare('SELECT 1 FROM schema_migrations WHERE version=6').get()){
+   database.exec(`
+    CREATE TABLE raw_inputs(id TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id),request_id TEXT,method TEXT NOT NULL DEFAULT 'unknown',original_text TEXT NOT NULL DEFAULT '',reference TEXT NOT NULL DEFAULT '',occurred_at TEXT,attachments TEXT NOT NULL DEFAULT '[]',created_at TEXT NOT NULL,actor TEXT NOT NULL DEFAULT 'website',UNIQUE(user_id,request_id));
+    CREATE INDEX idx_raw_inputs_user_created ON raw_inputs(user_id,created_at);
+    ALTER TABLE records ADD COLUMN source_id TEXT REFERENCES raw_inputs(id);
+    CREATE INDEX idx_records_source ON records(user_id,source_id);
+    INSERT INTO schema_migrations VALUES(6);
+   `);
+  }
   database.exec('COMMIT');
  }catch(e){database.exec('ROLLBACK');throw e}
 }

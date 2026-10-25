@@ -1,3 +1,4 @@
+import {validateIntake,storeIntake,intakeSnapshot} from './intake.mjs';
 import {contract} from './protocol.mjs';
 import {randomUUID} from 'node:crypto';
 import {db,transaction} from './database.mjs';
@@ -8,6 +9,11 @@ const obj=v=>v!==null&&typeof v==='object'&&!Array.isArray(v);
 const view=r=>({job_id:r.id,target_key_id:r.target_key_id,executor_id:r.claimed_key_id,...JSON.parse(r.request),status:r.status,dependencies:JSON.parse(r.dependencies),attempts:r.attempts,day:r.day,result:r.result?JSON.parse(r.result):null,created_at:r.created,updated_at:r.updated});
 function audit(d,u,event,id,now){d.prepare('INSERT INTO agent_audit(user_id,event,job_id,created) VALUES(?,?,?,?)').run(u,event,id,now)}
 function maintain(d,u,now){
+ for(const r of d.prepare("SELECT * FROM agent_jobs WHERE user_id=? AND status IN ('queued','running')").all(u)){
+  const request=JSON.parse(r.request);
+  if(request.action.startsWith('intake.')&&intakeSnapshot(d,u,request.action.slice(7)).context_hash!==request.payload.context.context_hash)d.prepare("UPDATE agent_jobs SET status='cancelled',updated=? WHERE id=?").run(now,r.id);
+ }
+
  for(const r of d.prepare("SELECT * FROM agent_jobs WHERE user_id=? AND status='running' AND effect=0 AND day IS NOT NULL").all(u)){
   const version=d.prepare('SELECT version FROM daily_days WHERE user_id=? AND day=?').get(u,r.day)?.version;
   if(version!==r.base_version)d.prepare("UPDATE agent_jobs SET status='cancelled',updated=? WHERE id=?").run(now,r.id);
@@ -58,6 +64,7 @@ export function claimJob(user,key,b,now=Date.now()){
 }
 function validateOutput(d,user,r,output){
  const req=JSON.parse(r.request);
+ if(req.action.startsWith('intake.')){validateIntake(d,user,r,output);return}
  if(req.action==='simulation.noop'){if(output.simulated!==true||output.external_effect!==false)fail(400,'模拟结果必须声明 simulated=true、external_effect=false');return}
  if(req.action.startsWith('analysis.'))analysisSchema.parse(output);
  if(req.action==='daily.plan'){
@@ -88,6 +95,7 @@ export function updateJob(user,key,id,action,b,now=Date.now()){
   if(b.status==='succeeded'){try{validateOutput(d,user,r,b.output)}catch(e){if(e?.name==='ZodError'){e.issues.forEach(i=>i.path.unshift('output'));e.example=contract(JSON.parse(r.request).action).success_example}throw e}}
   d.prepare('UPDATE agent_jobs SET status=?,result=?,updated=? WHERE id=?').run(status,canon({status,output:b.output}),now,id);audit(d,user,'result:'+status,id,now);
   const actionName=JSON.parse(r.request).action;
+  if(status==='succeeded'&&actionName.startsWith('intake.'))storeIntake(d,user,r,b.output,now);
   if(status==='succeeded'&&['daily.plan','daily.review'].includes(actionName)){
    const col=actionName==='daily.plan'?'plan':'review';
    d.prepare(`UPDATE daily_days SET ${col}=?,version=version+1,updated=? WHERE user_id=? AND day=? AND version=?`).run(JSON.stringify(b.output),now,user,r.day,r.base_version);

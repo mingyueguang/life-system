@@ -9,7 +9,7 @@ type Settings={enabled:boolean;plan_time:string;review_time:string;feishu:boolea
 type Executor={key_id:string;name:string;capabilities:string[];max_parallel:number;enabled:number;online:boolean;last_seen:number|null;expires_at:number|null};
 type Job={job_id:string;action:string;status:string;executor_id:string|null;dependencies:string[];day:string|null;result:null|{output:Record<string,unknown>}};
 const labels:Record<string,string>={queued:'等待执行 / 前置分析',running:'执行中',succeeded:'已完成',failed:'失败',needs_review:'需核对',cancelled:'已取消'};
-const actions:Record<string,string>={'analysis.work':'目标与工作分析','analysis.energy':'行为与精力分析','daily.plan':'统筹每日计划','daily.review':'每日复盘','feishu.publish':'发布到飞书','simulation.noop':'连接测试'};
+const actions:Record<string,string>={'intake.work':'工作资料沟通','intake.fitness':'健身资料沟通','intake.diet':'饮食资料沟通','analysis.work':'目标与工作分析','analysis.energy':'行为与精力分析','daily.plan':'统筹每日计划','daily.review':'每日复盘','feishu.publish':'发布到飞书','simulation.noop':'连接测试'};
 export async function lifeApi(path:string,data?:unknown){const r=await fetch('/api/agent/v1/'+path,{method:data===undefined?'GET':'POST',headers:data===undefined?undefined:{'Content-Type':'application/json'},body:data===undefined?undefined:JSON.stringify(data),cache:'no-store'});const d=await r.json();if(!r.ok)throw Error(d.error||'请求失败');return d}
 function FeedbackForm({item,value,busy,onSave}:{item:Item;value?:Feedback;busy:boolean;onSave:(data:unknown)=>void}){
  const [status,setStatus]=useState(value?.status||'done'),[minutes,setMinutes]=useState(value?.actual_minutes?.toString()||''),[note,setNote]=useState(value?.note||'');

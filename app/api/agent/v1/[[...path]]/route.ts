@@ -1,3 +1,4 @@
+import {intakeOverview,startIntake,updateIntake} from '@/server/intake.mjs';
 import {protocol} from '@/server/protocol.mjs';
 import {authorize,HttpError} from '@/server/auth.mjs';
 import {json,body,failure} from '@/server/http.mjs';
@@ -10,6 +11,7 @@ export async function GET(req:Request){try{
  if(path==='/api/agent/v1'||path==='/api/agent/v1/'||path==='/api/agent/v1/protocol')return json(protocol());
  if(path==='/api/agent/v1/jobs/active'){const u=authorize(req,{workerOnly:true});return json(activeJobs(u.id,u.keyId))}
  const u=authorize(req);
+ if(path==='/api/agent/v1/intake')return json(intakeOverview(u.id,url.searchParams.get('domain')||'work'));
  if(path==='/api/agent/v1/jobs')return json(listJobs(u.id));
  if(path==='/api/agent/v1/overview')return json(overview(u.id,url.searchParams.get('day')||today()));
  throw new HttpError(404,'接口不存在');
@@ -21,6 +23,12 @@ export async function POST(req:Request){try{
  const admin=path.endsWith('/settings')||path.endsWith('/executors/update');
  const u=worker?authorize(req,{workerOnly:true}):authorize(req,{write:true,sessionOnly:admin});
  const data=await body(req,256000);
+ if(path==='/api/agent/v1/intake/start')return json(startIntake(u.id,data));
+ if(path==='/api/agent/v1/intake/update'){
+  if(data.operation==='accept_evidence'&&u.type!=='session')throw new HttpError(403,'已有资料的整理建议请由用户在网站核对；AI 不得自行确认自己的推断');
+  return json(updateIntake(u.id,u.keyId||'website',data));
+ }
+
  if(path==='/api/agent/v1/jobs')return json(createJob(u.id,data),201);
  if(path==='/api/agent/v1/jobs/claim'){tick();return json(claimJob(u.id,u.keyId,data))}
  if(path==='/api/agent/v1/events')return json(saveEvent(u.id,u.keyId,data));
