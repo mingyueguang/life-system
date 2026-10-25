@@ -15,6 +15,8 @@ COPY --from=builder --chown=app:app /app/.next/static ./.next/static
 COPY --from=builder --chown=app:app /app/public ./public
 COPY --from=builder --chown=app:app /app/scripts ./scripts
 COPY --from=builder --chown=app:app /app/server ./server
+# The standalone web bundle inlines zod; the separate scheduler imports it directly.
+COPY --from=builder --chown=app:app /app/node_modules/zod ./node_modules/zod
 USER app
 EXPOSE 3000
 CMD ["node","server.js"]
