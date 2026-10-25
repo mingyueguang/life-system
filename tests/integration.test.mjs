@@ -26,10 +26,16 @@ test('independent account, API permissions, persistence and conflict protection'
   }
   await start();
   const protocol=await req('/api/agent/v1/');assert.equal(protocol.status,200);assert.ok(protocol.data.actions['daily.plan'].output_schema.required.includes('items'));
-  assert.equal(protocol.data.protocol_version,'1.4.2');
+  assert.equal(protocol.data.protocol_version,'1.5.0');
   assert.ok(protocol.data.actions['feishu.publish.fitness']&&protocol.data.actions['feishu.publish.diet']);
   assert.equal(protocol.data.actions['feishu.publish.fitness'].output_schema.required.includes('receipts'),true);
-  const health=await req('/api/agent/v1/health');assert.equal(health.data.release,'1.4.2');
+  // 契约自描述：错误码字典、租约时长与外部效果声明随协议返回，AI 不需要猜。
+  assert.ok(protocol.data.error_catalog.some(x=>x.code==='CONFLICT'&&x.action));
+  assert.equal(protocol.data.actions['daily.plan'].lease_seconds,600);
+  assert.equal(protocol.data.actions['daily.plan'].external_effect,false);
+  assert.equal(protocol.data.actions['feishu.publish'].lease_seconds,120);
+  assert.equal(protocol.data.actions['feishu.publish'].external_effect,true);
+  const health=await req('/api/agent/v1/health');assert.equal(health.data.release,'1.5.0');
   assert.equal((await req('/api/v1/records')).status,401);
   assert.equal((await req('/api/auth/status')).data.registered,false);
   const email='owner@example.test',password='Long-test-password-123!';
@@ -84,8 +90,9 @@ test('independent account, API permissions, persistence and conflict protection'
   const day='2026-10-28';
   assert.equal((await req('/api/agent/v1/executors/register',{method:'POST',token:read.data.token,data:{name:'reader',capabilities:['analysis']}})).status,403);
   assert.equal((await req('/api/agent/v1/executors/register',{method:'POST',token:worker.data.token,data:{name:'Doubao',capabilities:['analysis'],max_parallel:1}})).status,200);
-  assert.equal((await req('/api/agent/v1/settings',{method:'POST',token:write.data.token,data:{}})).status,401);
-  let overview=await req('/api/agent/v1/overview?day='+day,{cookie});assert.equal(overview.status,200);
+  // 单次授权：登记执行者持读写密钥即可修改设置（含飞书开关），不再要求网站会话。
+  const settingsSaved=await req('/api/agent/v1/settings',{method:'POST',token:write.data.token,data:{enabled:true,plan_time:'23:59',review_time:'23:58',feishu:false,auto_adjust:{enabled:true,overrun_factor:2,energy_drop_threshold:2,skip_carryover:true}}});assert.equal(settingsSaved.status,200);assert.equal(settingsSaved.data.enabled,true);
+  let overview=await req('/api/agent/v1/overview?day='+day,{cookie});assert.equal(overview.status,200);assert.equal(overview.data.settings.enabled,true);
   const daily={day,version:overview.data.day.version,operation:'input',data:{available_minutes:90,energy:3,fixed:'',note:''}};
   assert.equal((await req('/api/agent/v1/daily/update',{method:'POST',cookie,data:daily,requestOrigin:'https://attacker.test'})).status,403);
   const dailySaved=await req('/api/agent/v1/daily/update',{method:'POST',token:worker.data.token,data:daily});assert.equal(dailySaved.status,200);
@@ -105,6 +112,21 @@ test('independent account, API permissions, persistence and conflict protection'
   assert.equal((await req('/api/agent/v1/daily/update',{method:'POST',token:read.data.token,data:{day,version:overview.data.day.version,operation:'confirm'}})).status,403);
   assert.equal((await req('/api/agent/v1/daily/update',{method:'POST',cookie,data:{day,version:overview.data.day.version,operation:'confirm'}})).status,200);
 
+  // 单次授权：AI 通道可确认资料整理建议（accept_evidence）；执行者写入审计与记录历史。
+  const profileId=randomUUID();
+  const profileWrite=await req('/api/v1/records',{method:'POST',token:write.data.token,data:{request_id:randomUUID(),id:profileId,kind:'profile',version:0,data:{topic:'工作现状',statement:'测试状态',status:'known',note:''},metadata:{source:{method:'user_report',original_text:'测试输入'},certainty:'reported'}}});assert.equal(profileWrite.status,200);
+  const intakeView=await req('/api/agent/v1/intake?domain=work',{token:write.data.token});assert.equal(intakeView.status,200);
+  const started=await req('/api/agent/v1/intake/start',{method:'POST',token:write.data.token,data:{domain:'work',context_hash:intakeView.data.context_hash}});assert.equal(started.status,200);assert.ok(started.data.job_id);
+  const claimIntake=await req('/api/agent/v1/jobs/claim',{method:'POST',token:worker.data.token,data:{}});
+  assert.ok(claimIntake.data.job&&claimIntake.data.job.action==='intake.work');
+  const ijob=claimIntake.data.job;
+  const iout={summary:'收集结论',evidence:[{field_key:'work.current',record_id:profileId,record_version:1,value:'整理后的现状',reason:'来自用户输入'}],questions:[]};
+  assert.equal((await req('/api/agent/v1/jobs/'+ijob.job_id+'/result',{method:'POST',token:worker.data.token,data:{lease_token:ijob.lease_token,status:'succeeded',output:iout}})).status,200);
+  const intakeView2=await req('/api/agent/v1/intake?domain=work',{token:write.data.token});
+  const fld=intakeView2.data.fields.find(f=>f.key==='work.current');
+  assert.ok(fld&&fld.token);
+  assert.equal((await req('/api/agent/v1/intake/update',{method:'POST',token:write.data.token,data:{request_id:randomUUID(),domain:'work',field_key:'work.current',token:fld.token,operation:'accept_evidence',report_job_id:ijob.job_id,evidence_index:0}})).status,200);
+
   assert.equal((await req('/api/v1/schema',{token:read.data.token})).status,200);
   const record={id:randomUUID(),kind:'account',version:0,data:{title:'Test cash',balance:120000,note:''}};
   assert.equal((await req('/api/v1/records',{method:'POST',token:read.data.token,data:record})).status,403);
@@ -114,13 +136,13 @@ test('independent account, API permissions, persistence and conflict protection'
   assert.equal((await req('/api/v1/records',{method:'POST',token:write.data.token,data:record})).status,409);
   const updated=await req('/api/v1/records',{method:'POST',token:write.data.token,data:{...record,version:1,data:{...record.data,balance:110000}}});assert.equal(updated.data.record.version,2);
   await stop();await start();
-  const rows=await req('/api/v1/records',{cookie});assert.equal(rows.data.records.length,1);assert.equal(rows.data.records[0].data.balance,110000);
+  const rows=await req('/api/v1/records',{cookie});const accountRow=rows.data.records.find(r=>r.id===record.id);assert.ok(accountRow);assert.equal(accountRow.data.balance,110000);
   assert.equal((await req('/api/keys',{method:'DELETE',cookie,data:{id:read.data.id}})).status,200);
   assert.equal((await req('/api/v1/records',{token:read.data.token})).status,401);
   const deleted=await req('/api/v1/records',{method:'POST',token:write.data.token,data:{...record,version:2,deleted:true}});assert.equal(deleted.status,200);
-  assert.equal((await req('/api/v1/records',{cookie})).data.records.length,0);
-  assert.equal((await req('/api/v1/records?since=2000-01-01T00%3A00%3A00.000Z',{cookie})).data.records[0].deleted,true);
-  const schema=await req('/api/v1/schema',{token:write.data.token});assert.equal(schema.status,200);assert.equal(schema.data.protocolVersion,'1.4.2');assert.ok(schema.data.schemas.mood.properties.text);assert.ok(schema.data.metadataSchema.properties.source);
+  assert.equal((await req('/api/v1/records',{cookie})).data.records.some(r=>r.id===record.id),false);
+  const sinceRows=(await req('/api/v1/records?since=2000-01-01T00%3A00%3A00.000Z',{cookie})).data.records;assert.equal(sinceRows.find(r=>r.id===record.id).deleted,true);
+  const schema=await req('/api/v1/schema',{token:write.data.token});assert.equal(schema.status,200);assert.equal(schema.data.protocolVersion,'1.5.0');assert.ok(schema.data.schemas.mood.properties.text);assert.ok(schema.data.metadataSchema.properties.source);
   const provenance={request_id:randomUUID(),id:randomUUID(),kind:'phone_usage',version:0,data:{date:'2026-10-25',minutes:90},metadata:{source:{method:'device',original_text:'设备统计 90 分钟'}}};
   assert.equal((await req('/api/v1/records',{method:'POST',token:write.data.token,data:provenance})).status,200);
   assert.equal((await req('/api/v1/records',{method:'POST',token:write.data.token,data:provenance})).data.duplicate,true);
@@ -140,17 +162,19 @@ test('independent account, API permissions, persistence and conflict protection'
   const sourceDetail=await req('/api/v1/sources/'+shared,{token:readOnly.data.token});assert.equal(sourceDetail.data.records.length,2);
   assert.equal((await req('/api/v1/records?source='+shared,{token:readOnly.data.token})).data.records.length,2);
   const profileRes=await req('/api/v1/profile',{token:readOnly.data.token});assert.equal(profileRes.status,200);assert.ok(profileRes.data.domains.work&&profileRes.data.domains.fitness&&profileRes.data.domains.diet);assert.ok(profileRes.data.suggested_questions.length>0);assert.ok(profileRes.data.recent_changes.some(x=>x.record_id===sleepRec.id));
-  // 复核：只有网站登录用户可以确认/否定 AI 推断；版本冲突保护
-  assert.equal((await req('/api/v1/records/review',{method:'POST',token:write.data.token,data:{id:sleepRec.id,version:1,decision:'confirm'}})).status,401);
+  // 复核：网站会话与已登记 AI 执行者都可确认/否定 AI 推断；执行者身份写入 metadata.review.actor。
   assert.equal((await req('/api/v1/records/review',{method:'POST',cookie,data:{id:sleepRec.id,version:1,decision:'confirm'},requestOrigin:'https://attacker.test'})).status,403);
   const reviewed=await req('/api/v1/records/review',{method:'POST',cookie,data:{id:sleepRec.id,version:1,decision:'confirm'}});assert.equal(reviewed.status,200);assert.equal(reviewed.data.record.metadata.review.status,'confirmed');
+  const aiReview=await req('/api/v1/records/review',{method:'POST',token:write.data.token,data:{id:sleepRec.id,version:2,decision:'reject'}});assert.equal(aiReview.status,200);assert.equal(aiReview.data.record.metadata.review.status,'rejected');assert.equal(aiReview.data.record.metadata.review.actor,write.data.id);
   assert.equal((await req('/api/v1/records/review',{method:'POST',cookie,data:{id:sleepRec.id,version:1,decision:'reject'}})).status,409);
   // 归档后普通列表排除，原始资料仍列出（审计保留）
   assert.equal((await req('/api/v1/records',{method:'POST',token:write.data.token,data:{...runRec,request_id:randomUUID(),version:1,deleted:true}})).status,200);
-  assert.equal((await req('/api/v1/records',{cookie})).data.records.length,2,'provenance 与 sleepRec 可见，runRec 已归档');
+  const listAfterArchive=(await req('/api/v1/records',{cookie})).data.records;assert.ok(listAfterArchive.some(r=>r.id===sleepRec.id)&&listAfterArchive.some(r=>r.id===provenance.id));assert.equal(listAfterArchive.some(r=>r.id===runRec.id),false);
   assert.equal((await req('/api/v1/sources/'+shared,{token:readOnly.data.token})).data.records.length,2);
   // Schema 文档与实现保持同步
   const schemaDoc=await req('/api/v1/schema',{token:readOnly.data.token});assert.ok(schemaDoc.data.sources.includes('/api/v1/sources'));assert.ok(schemaDoc.data.profile.includes('/api/v1/profile'));assert.ok(schemaDoc.data.review.includes('/api/v1/records/review'));
+  // 单次授权：AI 通道可调用领域方案确认（本账户无候选方案，鉴权通过则返回 404 而非 401/403）。
+  assert.equal((await req('/api/v1/plans/confirm',{method:'POST',token:write.data.token,data:{domain:'fitness',version:99}})).status,404);
   const changed=await req('/api/auth/password',{method:'POST',cookie,data:{currentPassword:password,password:'New-long-test-password!'}});assert.equal(changed.status,200);
   assert.equal((await req('/api/v1/records',{cookie:secondCookie})).status,401);
   const newCookie=changed.cookie.split(';')[0];

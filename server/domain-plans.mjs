@@ -40,6 +40,8 @@ export function confirmPlan(user,domain,version,actor,now=new Date().toISOString
   if(row.status!=='candidate'&&row.status!=='needs_review')fail(409,'只有候选或需复核的方案可以确认');
   d.prepare("UPDATE domain_plans SET status='superseded' WHERE user_id=? AND domain=? AND version<? AND status IN ('candidate','confirmed')").run(user,domain,version);
   d.prepare('UPDATE domain_plans SET status=?,confirmed_at=?,updated_at=? WHERE user_id=? AND domain=? AND version=?').run('confirmed',now,now,user,domain,version);
+  // 确认人写入审计（执行者 keyId 或 'website'）。
+  d.prepare('INSERT INTO agent_audit(user_id,event,job_id,created) VALUES(?,?,?,?)').run(user,'plan.confirm:'+actor,null,Date.now());
   return view(d.prepare('SELECT * FROM domain_plans WHERE user_id=? AND domain=? AND version=?').get(user,domain,version));
  });
 }

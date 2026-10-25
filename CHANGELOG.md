@@ -1,3 +1,11 @@
+# 1.5.0 · 2026-10-26
+
+- **单次授权即全权限（AI 对话为主线）**：已登记执行者持读写密钥即获得完整操作权限，不再按操作单独授权——确认/撤回计划（daily/update confirm|reopen）、修改系统设置（settings，含飞书开关）、确认领域方案（plans/confirm）、核实 AI 提取信息（records/review）、确认资料整理建议（intake accept_evidence）全部开放 AI 通道；原"仅网站会话/仅网站核对"的 403 拦截移除。
+- **全量审计替代逐次审批**：每次写操作记录执行者（密钥标识或 website）——计划确认/撤回写入 agent_audit（day.confirm:actor / day.reopen:actor），设置修改写入 agent_audit（settings.update:actor），方案确认写入 agent_audit（plan.confirm:actor），资料整理确认写入 agent_audit（intake.accept_evidence:actor），记录核实写入 metadata.review.actor。事后可查、可追溯，用户不要求网站参与日常确认。
+- **契约自描述增强（AI 不猜格式）**：protocol 新增 error_catalog（9 个错误码的机器可读含义与修正指引）、每个 action 的 contract 附 lease_seconds 与 external_effect；ai-guide.md 新增"错误码与处理"表与"认证与单次授权"说明；schema 文档同步去除"仅网站登录用户"表述。所有失败响应保持结构化 JSON（error/code/details/hint）。
+- 协议版本 1.5.0（package.json / package-lock / schema protocolVersion / health release / protocol.mjs / ai-guide.md 同步）。
+- 测试：集成测试覆盖 AI 通道 settings/plans/confirm/records/review/accept_evidence、契约 error_catalog 与 lease、执行者审计留痕；持久化断言改为按记录 ID 匹配。20/20 通过，typecheck 通过。
+
 # 1.4.2 · 2026-10-25
 
 - 心情日记、手机使用、环境记录进入分析上下文：三域分析与统筹能看到空气质量、手机时长与心情自评，为"今天是否该减量"提供输入；移除无效的 diet 记录类型引用（饮食摄入由 intake 承担，饮食方案存于 daily_days.diet）。

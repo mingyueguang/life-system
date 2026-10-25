@@ -90,6 +90,8 @@ function applyOne(d,user,actor,v,now){
   if(!report||report.job_id!==v.report_job_id)fail(409,'该条整理建议已过期，请重新核对');
   const item=report.evidence[v.evidence_index];if(!item||!item.current||item.field_key!==def.key)fail(400,'整理建议不匹配');
   answer=item.value;source={method:'user_report',original_text:'用户确认已有资料整理：'+item.value};related_ids=[item.record_id];evidence=[{id:item.record_id,version:item.record_version}];
+  // 确认人写入审计（执行者 keyId 或 'website'）；协议约束 AI 须在用户对话同意后转达。
+  d.prepare('INSERT INTO agent_audit(user_id,event,job_id,created) VALUES(?,?,?,?)').run(user,'intake.accept_evidence:'+actor,null,now);
  }
  let record_id=field.record?.id||null,record_version=field.record?.version||null;
  if(['answer','accept_evidence'].includes(v.operation)){

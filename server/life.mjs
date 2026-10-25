@@ -29,7 +29,7 @@ const autoAdjustSchema=z.object({enabled:z.boolean(),overrun_factor:z.number().m
 const settingsSchema=z.object({enabled:z.boolean(),plan_time:z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),review_time:z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),feishu:z.boolean(),auto_adjust:autoAdjustSchema}).strict();
 const settingsDefaults={enabled:false,plan_time:'07:00',review_time:'21:00',feishu:false,auto_adjust:{enabled:true,overrun_factor:2,energy_drop_threshold:2,skip_carryover:true}};
 export function settings(user,d=db()){const b=JSON.parse(d.prepare('SELECT body FROM life_settings WHERE user_id=?').get(user)?.body||'{}');return {...settingsDefaults,...b,auto_adjust:{...settingsDefaults.auto_adjust,...(b.auto_adjust||{})}}}
-export function saveSettings(user,b){const value=settingsSchema.parse({...b,auto_adjust:{...settingsDefaults.auto_adjust,...(b.auto_adjust||{})}});db().prepare('INSERT INTO life_settings VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET body=excluded.body').run(user,JSON.stringify(value));return value}
+export function saveSettings(user,b){const {actor='website',...rest}=b;const value=settingsSchema.parse({...rest,auto_adjust:{...settingsDefaults.auto_adjust,...(rest.auto_adjust||{})}});db().prepare('INSERT INTO life_settings VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET body=excluded.body').run(user,JSON.stringify(value));db().prepare('INSERT INTO agent_audit(user_id,event,job_id,created) VALUES(?,?,?,?)').run(user,'settings.update:'+actor,null,Date.now());return value}
 export function ensureDay(d,user,day,now){dateSchema.parse(day);d.prepare("INSERT OR IGNORE INTO daily_days(user_id,day,input,updated) VALUES(?,?,?,?)").run(user,day,JSON.stringify(inputSchema.parse({})),now);return d.prepare('SELECT * FROM daily_days WHERE user_id=? AND day=?').get(user,day)}
 export function unpackDay(r){return {...r,input:JSON.parse(r.input),plan:r.plan?JSON.parse(r.plan):null,feedback:JSON.parse(r.feedback),review:r.review?JSON.parse(r.review):null,fitness:r.fitness?JSON.parse(r.fitness):null,diet:r.diet?JSON.parse(r.diet):null,confirmed:!!r.confirmed}}
 export function records(d,user){return d.prepare("SELECT r.id,r.kind,r.payload,r.version,m.body FROM records r LEFT JOIN record_metadata m ON m.record_id=r.id WHERE r.user_id=? AND r.deleted=0 AND r.kind IN ('goal','task','sleep','exercise','intake','environment','phone_usage','mood','profile') ORDER BY r.id").all(user).map(r=>({id:r.id,kind:r.kind,version:r.version,data:JSON.parse(r.payload),metadata:r.body?JSON.parse(r.body):{}}))}
@@ -95,7 +95,7 @@ function generateIn(d,user,day,kind,version,now){
  return {job_id:enqueue(d,user,{idem:prefix,action:'daily.plan',day,version,dependencies:deps,payload:{...common,confirmed_plans:confirmed,domain_states:states,role:'统筹：综合已确认方案（confirmed_plans，直接引用其事项 id 作 source_id）与本次前置分析结果，形成唯一无冲突的计划草案。domain_states 说明各领域状态与沿用/分析原因。任务使用 UUID；每项须标明 domain（work/fitness/diet）和来源 source_id（引用被选中的方案事项 id），未选中的专业事项放入 deferred 并说明。时间预算由服务器校验：总耗时加机动不得超过已知可用时间；固定安排（context.day.input.fixed）占用的时间要计入预算，无法从文本解析时在 missing 中说明，不硬排精确时间槽。重要临时事项（context.records 中新增的 task/note 类记录）与昨日结转（carryover）优先纳入今日计划，避免无限拖延；核对清单（audit）中已完成或过期的记录仅作提示，周期事项照常安排。'}},now)};
 }
 export function updateDay(user,b,now=Date.now()){
- const v=z.object({day:dateSchema,version:z.number().int(),operation:z.enum(['input','feedback','confirm','reopen']),data:z.unknown().optional()}).strict().parse(b);
+ const v=z.object({day:dateSchema,version:z.number().int(),operation:z.enum(['input','feedback','confirm','reopen']),data:z.unknown().optional(),actor:z.string().max(80).optional()}).strict().parse(b);
  return transaction(d=>{const r=ensureDay(d,user,v.day,now);if(r.version!==v.version)fail(409,'数据已变化，请刷新后重试');
  if(v.operation==='input'){const input=inputSchema.parse(v.data);if(r.confirmed)fail(409,'请先撤回计划，再修改规划条件');d.prepare('UPDATE daily_days SET input=?,plan=NULL,review=NULL,fitness=NULL,diet=NULL,version=version+1,updated=? WHERE user_id=? AND day=?').run(JSON.stringify(input),now,user,v.day)}
  if(v.operation==='feedback'){
@@ -126,12 +126,14 @@ export function updateDay(user,b,now=Date.now()){
    if(fitnessSnapshot)enqueue(d,user,{idem:`${v.day}:publish-fitness:${r.version+1}`,action:'feishu.publish.fitness',day:v.day,version:r.version+1,payload:{plan:fitnessSnapshot,instruction:'将已确认计划中选中的健身事项发布到飞书并创建训练清单（含每项时长）。按事项 id 查重；回传每个训练项的外部 ID；部分成功失败回传 needs_review 与已有回执。'}},now);
    if(dietSnapshot)enqueue(d,user,{idem:`${v.day}:publish-diet:${r.version+1}`,action:'feishu.publish.diet',day:v.day,version:r.version+1,payload:{plan:dietSnapshot,instruction:'将已确认计划中选中的饮食事项发布到飞书并创建饮食安排清单。按事项 id 查重；回传每个餐项的外部 ID；部分成功失败回传 needs_review 与已有回执。'}},now);
   }
+  d.prepare('INSERT INTO agent_audit(user_id,event,job_id,created) VALUES(?,?,?,?)').run(user,'day.confirm:'+(v.actor||'website'),null,now);
  }
  if(v.operation==='reopen'){
   if(d.prepare("SELECT 1 FROM agent_jobs WHERE user_id=? AND day=? AND effect=1 AND status IN ('running','needs_review')").get(user,v.day))fail(409,'飞书操作尚在执行或待核对，请先处理该任务');
   if(d.prepare("SELECT 1 FROM agent_jobs WHERE user_id=? AND day=? AND effect=1 AND status='succeeded'").get(user,v.day))fail(409,'计划已发布到飞书，当前版本不支持自动修改已发布计划，请保留计划并记录反馈');
   d.prepare("UPDATE agent_jobs SET status='cancelled',updated=? WHERE user_id=? AND day=? AND status='queued'").run(now,user,v.day);
   d.prepare('UPDATE daily_days SET confirmed=0,plan=NULL,feedback=\'{}\',review=NULL,fitness=NULL,diet=NULL,version=version+1,updated=? WHERE user_id=? AND day=?').run(now,user,v.day);
+  d.prepare('INSERT INTO agent_audit(user_id,event,job_id,created) VALUES(?,?,?,?)').run(user,'day.reopen:'+(v.actor||'website'),null,now);
  }
  return unpackDay(ensureDay(d,user,v.day,now));});
 }
