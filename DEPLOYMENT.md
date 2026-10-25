@@ -60,3 +60,10 @@ unset life_new_password
 运行 typecheck、build、test。确认未登录的数据接口 401，错误来源写入 403，已注册后关闭注册，HTTPS Cookie 带 Secure/HttpOnly/SameSite，只读密钥不能写、撤销密钥不可用、旧版本更新 409。确认重部署仍有数据，完成备份恢复演练。
 
 本地构建和接口测试已通过；工作环境未安装 Docker，需接手者验证容器构建和目标平台部署。未设置定时备份、监控、邮件服务或旧站数据迁移。不要上传 node_modules、.next、data、backups、真实 .env 或数据库文件。
+
+
+## 1.2.0 更新
+
+使用 Compose 的 app 与 scheduler 两个进程，共享原 life-data 数据卷。先构建镜像并运行测试，再停止旧写入者、备份源码/数据库/静态说明，在备份副本上验证迁移 3 后更新。无需新的环境变量或模型配置。
+
+同步 public/ai-guide.md 到 Caddy 静态托管目录；不能继续给 AI 旧版 simulation_only 说明。启动 app 与 scheduler，核对 health.release=1.2.0、未认证数据接口 401、原数据与密钥保留。自动规划默认关闭，已授权的用户可通过网站设置。回滚必须同时恢复原数据库、源码、旧镜像、静态说明，并停止 scheduler；不允许旧代码继续写入新库后才恢复备份。

@@ -43,10 +43,10 @@ test('independent account, API permissions, persistence and conflict protection'
 
   const worker=await req('/api/keys',{method:'POST',cookie,data:{name:'doubao',scope:'worker',days:90}});assert.equal(worker.status,201);
   const worker2=await req('/api/keys',{method:'POST',cookie,data:{name:'other executor',scope:'worker',days:90}});assert.equal(worker2.status,201);
-  assert.equal((await req('/api/v1/records',{token:worker.data.token})).status,403);
-  assert.equal((await req('/api/v1/schema',{token:worker.data.token})).status,403);
-  assert.equal((await req('/api/agent/v1/jobs',{token:worker.data.token})).status,401);
-  assert.equal((await req('/api/agent/v1/jobs/claim',{method:'POST',token:write.data.token,data:{}})).status,403);
+  assert.equal((await req('/api/v1/records',{token:worker.data.token})).status,200);
+  assert.equal((await req('/api/v1/schema',{token:worker.data.token})).status,200);
+  assert.equal((await req('/api/agent/v1/jobs',{token:worker.data.token})).status,200);
+  assert.equal((await req('/api/agent/v1/jobs/claim',{method:'POST',token:write.data.token,data:{}})).status,200);
   assert.equal((await req('/api/agent/v1/jobs/claim',{method:'POST',cookie,data:{}})).status,401);
   const jobInput={idempotency_key:randomUUID(),target_key_id:worker.data.id,mode:'simulation',action:'simulation.noop',payload:{test:true}};
   assert.equal((await req('/api/agent/v1/jobs',{method:'POST',cookie,data:jobInput,requestOrigin:'https://attacker.test'})).status,403);
@@ -68,6 +68,28 @@ test('independent account, API permissions, persistence and conflict protection'
   const revokeClaim=await req('/api/agent/v1/jobs/claim',{method:'POST',token:worker2.data.token,data:{job_id:revokeJob.data.job_id}});
   assert.equal((await req('/api/keys',{method:'DELETE',cookie,data:{id:worker2.data.id}})).status,200);
   assert.equal((await req('/api/agent/v1/jobs/'+revokeJob.data.job_id+'/result',{method:'POST',token:worker2.data.token,data:{...result,lease_token:revokeClaim.data.job.lease_token}})).status,401);
+
+  // Live workflow over HTTP: old worker credentials retain business access;
+  // write credentials can register and execute, read credentials cannot mutate.
+  const day='2026-10-28';
+  assert.equal((await req('/api/agent/v1/executors/register',{method:'POST',token:read.data.token,data:{name:'reader',capabilities:['analysis']}})).status,403);
+  assert.equal((await req('/api/agent/v1/executors/register',{method:'POST',token:worker.data.token,data:{name:'Doubao',capabilities:['analysis'],max_parallel:1}})).status,200);
+  assert.equal((await req('/api/agent/v1/settings',{method:'POST',token:write.data.token,data:{}})).status,401);
+  let overview=await req('/api/agent/v1/overview?day='+day,{cookie});assert.equal(overview.status,200);
+  const daily={day,version:overview.data.day.version,operation:'input',data:{available_minutes:90,energy:3,fixed:'',note:''}};
+  assert.equal((await req('/api/agent/v1/daily/update',{method:'POST',cookie,data:daily,requestOrigin:'https://attacker.test'})).status,403);
+  const dailySaved=await req('/api/agent/v1/daily/update',{method:'POST',token:worker.data.token,data:daily});assert.equal(dailySaved.status,200);
+  assert.equal((await req('/api/agent/v1/daily/update',{method:'POST',token:worker.data.token,data:daily})).status,409);
+  assert.equal((await req('/api/agent/v1/daily/generate',{method:'POST',token:worker.data.token,data:{day,version:dailySaved.data.version,kind:'plan'}})).status,200);
+  for(let i=0;i<3;i++){
+   const c=await req('/api/agent/v1/jobs/claim',{method:'POST',token:worker.data.token,data:{}});assert.equal(c.status,200);assert.ok(c.data.job);
+   const j=c.data.job;
+   const output=j.action==='daily.plan'?{summary:'HTTP plan',items:[{id:randomUUID(),title:'Important action',minutes:30,reason:'Goal',task_id:null}],buffer_minutes:15,deferred:[],missing:[]}:{summary:'Analysis',recommendations:['Keep buffer'],missing:[]};
+   assert.equal((await req('/api/agent/v1/jobs/'+j.job_id+'/result',{method:'POST',token:worker.data.token,data:{lease_token:j.lease_token,status:'succeeded',output}})).status,200);
+  }
+  overview=await req('/api/agent/v1/overview?day='+day,{cookie});assert.equal(overview.data.day.plan.summary,'HTTP plan');
+  assert.equal((await req('/api/agent/v1/daily/update',{method:'POST',token:read.data.token,data:{day,version:overview.data.day.version,operation:'confirm'}})).status,403);
+  assert.equal((await req('/api/agent/v1/daily/update',{method:'POST',cookie,data:{day,version:overview.data.day.version,operation:'confirm'}})).status,200);
 
   assert.equal((await req('/api/v1/schema',{token:read.data.token})).status,200);
   const record={id:randomUUID(),kind:'account',version:0,data:{title:'Test cash',balance:120000,note:''}};

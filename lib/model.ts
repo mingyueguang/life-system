@@ -7,7 +7,7 @@ const amount=z.number().int().min(0).max(1e12);
 const num=z.number().min(0).max(1e9);
 export const schemas={
  goal:z.object({title,period:z.enum(['life','five','three','near']),due:optionalDate,progress:z.number().min(0).max(100).default(0),note}).strict(),
- task:z.object({title,due:optionalDate,done:z.boolean().default(false),goal:z.string().max(150).default(''),platform:z.string().max(100).default(''),note}).strict(),
+ task:z.object({title,priority:z.enum(['high','normal','low']).default('normal'),estimated_minutes:z.number().int().min(0).max(1440).default(0),due:optionalDate,done:z.boolean().default(false),goal:z.string().max(150).default(''),platform:z.string().max(100).default(''),note}).strict(),
  account:z.object({title,balance:amount,note}).strict(),
  debt:z.object({title,type:z.enum(['platform','friend']),principal:amount,note}).strict(),
  repayment:z.object({title,type:z.enum(['platform','friend']),due:date,amount,paid:z.boolean().default(false),note}).strict(),
@@ -23,7 +23,7 @@ export type Field={key:string;label:string;type?:'text'|'date'|'number'|'money'|
 const n:Field={key:'note',label:'备注',type:'textarea'};const name:Field={key:'title',label:'名称',required:true};
 export const catalog:Record<Kind,{label:string;fields:Field[]}>= {
  goal:{label:'目标',fields:[name,{key:'period',label:'目标周期',type:'select',options:[['life','人生目标'],['five','5 年目标'],['three','3 年目标'],['near','近期目标']],default:'near'},{key:'due',label:'截止日期',type:'date'},{key:'progress',label:'成果进度（%）',type:'number',default:0,max:100},n]},
- task:{label:'待办',fields:[name,{key:'due',label:'截止日期',type:'date'},{key:'done',label:'已完成',type:'boolean'},{key:'goal',label:'关联目标'},{key:'platform',label:'使用平台'},n]},
+ task:{label:'待办',fields:[name,{key:'priority',label:'优先级',type:'select',options:[['high','高'],['normal','普通'],['low','低']],default:'normal'},{key:'estimated_minutes',label:'预计耗时（分钟，0 表示未知）',type:'number',default:0,max:1440},{key:'due',label:'截止日期',type:'date'},{key:'done',label:'已完成',type:'boolean'},{key:'goal',label:'关联目标'},{key:'platform',label:'使用平台'},n]},
  account:{label:'现金账户',fields:[name,{key:'balance',label:'可用余额（元）',type:'money',required:true},n]},
  debt:{label:'债务',fields:[name,{key:'type',label:'债务类型',type:'select',options:[['platform','平台债务'],['friend','亲友债务']],default:'platform'},{key:'principal',label:'未偿本金（元）',type:'money',required:true},n]},
  repayment:{label:'还款计划',fields:[{...name,label:'还款平台 / 亲友'},{key:'type',label:'类型',type:'select',options:[['platform','平台'],['friend','亲友']],default:'platform'},{key:'due',label:'还款日期',type:'date',required:true},{key:'amount',label:'应还金额（元）',type:'money',required:true},{key:'paid',label:'已还款',type:'boolean'},n]},

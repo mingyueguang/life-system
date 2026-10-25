@@ -15,6 +15,22 @@ export function migrate(database){
     INSERT INTO schema_migrations VALUES(2);
    `);
   }
+  if(!database.prepare('SELECT 1 FROM schema_migrations WHERE version=3').get()){
+   database.exec(`
+    ALTER TABLE agent_jobs ADD COLUMN claimed_key_id TEXT;
+    ALTER TABLE agent_jobs ADD COLUMN capability TEXT NOT NULL DEFAULT 'analysis';
+    ALTER TABLE agent_jobs ADD COLUMN dependencies TEXT NOT NULL DEFAULT '[]';
+    ALTER TABLE agent_jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE agent_jobs ADD COLUMN effect INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE agent_jobs ADD COLUMN day TEXT;
+    ALTER TABLE agent_jobs ADD COLUMN base_version INTEGER;
+    UPDATE agent_jobs SET claimed_key_id=target_key_id WHERE status!='queued';
+    CREATE TABLE executors(key_id TEXT PRIMARY KEY,user_id TEXT NOT NULL,name TEXT NOT NULL,capabilities TEXT NOT NULL,max_parallel INTEGER NOT NULL DEFAULT 1,enabled INTEGER NOT NULL DEFAULT 1,last_seen INTEGER);
+    CREATE TABLE daily_days(user_id TEXT NOT NULL,day TEXT NOT NULL,version INTEGER NOT NULL DEFAULT 1,input TEXT NOT NULL,plan TEXT,confirmed INTEGER NOT NULL DEFAULT 0,feedback TEXT NOT NULL DEFAULT '{}',review TEXT,updated INTEGER NOT NULL,PRIMARY KEY(user_id,day));
+    CREATE TABLE life_settings(user_id TEXT PRIMARY KEY,body TEXT NOT NULL);
+    INSERT INTO schema_migrations VALUES(3);
+   `);
+  }
   database.exec('COMMIT');
  }catch(e){database.exec('ROLLBACK');throw e}
 }

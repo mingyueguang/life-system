@@ -1,13 +1,21 @@
 services:
   app:
     build: .
-    image: life-system:1.1.0
+    image: life-system:1.2.0
     restart: unless-stopped
     ports:
       - "127.0.0.1:3000:3000"
     environment:
       APP_ORIGIN: ${APP_ORIGIN:?Set the HTTPS public origin}
       BOOTSTRAP_TOKEN: ${BOOTSTRAP_TOKEN:-}
+      DATABASE_PATH: /data/life.sqlite
+    volumes:
+      - life-data:/data
+  scheduler:
+    image: life-system:1.2.0
+    restart: unless-stopped
+    command: ["node", "scripts/scheduler.mjs"]
+    environment:
       DATABASE_PATH: /data/life.sqlite
     volumes:
       - life-data:/data
