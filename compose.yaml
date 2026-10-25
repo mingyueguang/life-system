@@ -1,7 +1,7 @@
 services:
   app:
     build: .
-    image: life-system:1.2.0
+    image: life-system:1.4.2
     restart: unless-stopped
     ports:
       - "127.0.0.1:3000:3000"
@@ -12,7 +12,7 @@ services:
     volumes:
       - life-data:/data
   scheduler:
-    image: life-system:1.2.0
+    image: life-system:1.4.2
     restart: unless-stopped
     command: ["node", "scripts/scheduler.mjs"]
     environment:
