@@ -57,6 +57,13 @@ export function migrate(database){
     INSERT INTO schema_migrations VALUES(6);
    `);
   }
+  if(!database.prepare('SELECT 1 FROM schema_migrations WHERE version=7').get()){
+   database.exec(`
+    ALTER TABLE daily_days ADD COLUMN fitness TEXT;
+    ALTER TABLE daily_days ADD COLUMN diet TEXT;
+    INSERT INTO schema_migrations VALUES(7);
+   `);
+  }
   database.exec('COMMIT');
  }catch(e){database.exec('ROLLBACK');throw e}
 }

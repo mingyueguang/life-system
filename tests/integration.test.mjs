@@ -26,6 +26,10 @@ test('independent account, API permissions, persistence and conflict protection'
   }
   await start();
   const protocol=await req('/api/agent/v1/');assert.equal(protocol.status,200);assert.ok(protocol.data.actions['daily.plan'].output_schema.required.includes('items'));
+  assert.equal(protocol.data.protocol_version,'1.4.2');
+  assert.ok(protocol.data.actions['feishu.publish.fitness']&&protocol.data.actions['feishu.publish.diet']);
+  assert.equal(protocol.data.actions['feishu.publish.fitness'].output_schema.required.includes('receipts'),true);
+  const health=await req('/api/agent/v1/health');assert.equal(health.data.release,'1.4.2');
   assert.equal((await req('/api/v1/records')).status,401);
   assert.equal((await req('/api/auth/status')).data.registered,false);
   const email='owner@example.test',password='Long-test-password-123!';
@@ -87,14 +91,14 @@ test('independent account, API permissions, persistence and conflict protection'
   const dailySaved=await req('/api/agent/v1/daily/update',{method:'POST',token:worker.data.token,data:daily});assert.equal(dailySaved.status,200);
   assert.equal((await req('/api/agent/v1/daily/update',{method:'POST',token:worker.data.token,data:daily})).status,409);
   assert.equal((await req('/api/agent/v1/daily/generate',{method:'POST',token:worker.data.token,data:{day,version:dailySaved.data.version,kind:'plan'}})).status,200);
-  for(let i=0;i<3;i++){
+  for(let i=0;i<4;i++){
    const c=await req('/api/agent/v1/jobs/claim',{method:'POST',token:worker.data.token,data:{}});assert.equal(c.status,200);assert.ok(c.data.job);
    const j=c.data.job;
    if(i===0){
     const bad=await req('/api/agent/v1/jobs/'+j.job_id+'/result',{method:'POST',token:worker.data.token,data:{lease_token:j.lease_token,status:'succeeded',output:{summary:'test',recommendations:[]}}});
     assert.equal(bad.status,400);assert.equal(bad.data.code,'VALIDATION_ERROR');assert.ok(bad.data.details.some(x=>x.path==='output.missing'));assert.ok(bad.data.example.output.missing);
    }
-   const output=j.action==='daily.plan'?{summary:'HTTP plan',items:[{id:randomUUID(),title:'Important action',minutes:30,reason:'Goal',task_id:null}],buffer_minutes:15,deferred:[],missing:[]}:{summary:'Analysis',recommendations:['Keep buffer'],missing:[]};
+   const output=j.action==='daily.plan'?{summary:'HTTP plan',items:[{id:randomUUID(),title:'Important action',minutes:30,reason:'Goal',task_id:null}],buffer_minutes:15,deferred:[],missing:[]}:j.action==='analysis.fitness'?{summary:'Fitness plan',sessions:[{id:randomUUID(),title:'Run',minutes:30,reason:'Goal'}],missing:[]}:j.action==='analysis.diet'?{summary:'Diet plan',meals:[{id:randomUUID(),title:'Breakfast',reason:'Goal'}],missing:[]}:{summary:'Analysis',recommendations:['Keep buffer'],missing:[]};
    assert.equal((await req('/api/agent/v1/jobs/'+j.job_id+'/result',{method:'POST',token:worker.data.token,data:{lease_token:j.lease_token,status:'succeeded',output}})).status,200);
   }
   overview=await req('/api/agent/v1/overview?day='+day,{cookie});assert.equal(overview.data.day.plan.summary,'HTTP plan');
@@ -116,7 +120,7 @@ test('independent account, API permissions, persistence and conflict protection'
   const deleted=await req('/api/v1/records',{method:'POST',token:write.data.token,data:{...record,version:2,deleted:true}});assert.equal(deleted.status,200);
   assert.equal((await req('/api/v1/records',{cookie})).data.records.length,0);
   assert.equal((await req('/api/v1/records?since=2000-01-01T00%3A00%3A00.000Z',{cookie})).data.records[0].deleted,true);
-  const schema=await req('/api/v1/schema',{token:write.data.token});assert.equal(schema.status,200);assert.ok(schema.data.schemas.mood.properties.text);assert.ok(schema.data.metadataSchema.properties.source);
+  const schema=await req('/api/v1/schema',{token:write.data.token});assert.equal(schema.status,200);assert.equal(schema.data.protocolVersion,'1.4.2');assert.ok(schema.data.schemas.mood.properties.text);assert.ok(schema.data.metadataSchema.properties.source);
   const provenance={request_id:randomUUID(),id:randomUUID(),kind:'phone_usage',version:0,data:{date:'2026-10-25',minutes:90},metadata:{source:{method:'device',original_text:'设备统计 90 分钟'}}};
   assert.equal((await req('/api/v1/records',{method:'POST',token:write.data.token,data:provenance})).status,200);
   assert.equal((await req('/api/v1/records',{method:'POST',token:write.data.token,data:provenance})).data.duplicate,true);

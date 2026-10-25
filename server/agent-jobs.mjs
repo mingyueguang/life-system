@@ -2,7 +2,7 @@ import {validateIntake,storeIntake,intakeSnapshot} from './intake.mjs';
 import {contract} from './protocol.mjs';
 import {randomUUID} from 'node:crypto';
 import {db,transaction} from './database.mjs';
-import {fail,canon,planSchema,analysisSchema,reviewSchema,publishSchema,records,fingerprint} from './life.mjs';
+import {fail,canon,planSchema,analysisSchema,fitnessPlanSchema,dietPlanSchema,reviewSchema,publishSchema,records,fingerprint} from './life.mjs';
 const leaseMs=r=>JSON.parse(r.request).mode==='live'&&!r.effect?600000:120000;
 const str=(v,max=200)=>typeof v==='string'&&v.length>0&&v.length<=max;
 const obj=v=>v!==null&&typeof v==='object'&&!Array.isArray(v);
@@ -66,7 +66,9 @@ function validateOutput(d,user,r,output){
  const req=JSON.parse(r.request);
  if(req.action.startsWith('intake.')){validateIntake(d,user,r,output);return}
  if(req.action==='simulation.noop'){if(output.simulated!==true||output.external_effect!==false)fail(400,'模拟结果必须声明 simulated=true、external_effect=false');return}
- if(req.action.startsWith('analysis.'))analysisSchema.parse(output);
+ if(req.action==='analysis.fitness')fitnessPlanSchema.parse(output);
+ else if(req.action==='analysis.diet')dietPlanSchema.parse(output);
+ else if(req.action.startsWith('analysis.'))analysisSchema.parse(output);
  if(req.action==='daily.plan'){
   const p=planSchema.parse(output),available=req.payload.context.day.input.available_minutes;
   if(new Set(p.items.map(x=>x.id)).size!==p.items.length)fail(400,'计划事项 ID 重复');
@@ -76,10 +78,12 @@ function validateOutput(d,user,r,output){
   if(req.payload.context.records_version!==fingerprint(records(d,user)))fail(409,'业务数据已变化，请重新生成计划');
  }
  if(req.action==='daily.review')reviewSchema.parse(output);
- if(req.action==='feishu.publish'){
-  const v=publishSchema.parse(output),ids=req.payload.plan.items.map(x=>x.id);
+ if(req.action.startsWith('feishu.publish')){
+  const v=publishSchema.parse(output);
+  const key=req.action==='feishu.publish.fitness'?'sessions':req.action==='feishu.publish.diet'?'meals':'items';
+  const ids=(req.payload.plan[key]||[]).map(x=>x.id);
   if(!ids.length)ids.push('summary');
-  if(v.receipts.length!==ids.length||new Set(v.receipts.map(x=>x.item_id)).size!==ids.length||v.receipts.some(x=>!ids.includes(x.item_id)))fail(400,'回执必须覆盖每个计划事项，且不能重复');
+  if(v.receipts.length!==ids.length||new Set(v.receipts.map(x=>x.item_id)).size!==ids.length||v.receipts.some(x=>!ids.includes(x.item_id)))fail(400,'回执必须覆盖每个事项，且不能重复');
  }
  if(r.day&&!r.effect){const day=d.prepare('SELECT * FROM daily_days WHERE user_id=? AND day=?').get(user,r.day);if(!day||day.version!==r.base_version)fail(409,'每日数据已变化，本次结果已过期，请重新生成');}
 }
@@ -99,6 +103,13 @@ export function updateJob(user,key,id,action,b,now=Date.now()){
   if(status==='succeeded'&&['daily.plan','daily.review'].includes(actionName)){
    const col=actionName==='daily.plan'?'plan':'review';
    d.prepare(`UPDATE daily_days SET ${col}=?,version=version+1,updated=? WHERE user_id=? AND day=? AND version=?`).run(JSON.stringify(b.output),now,user,r.day,r.base_version);
+  }
+  // Domain plans are intermediate products: saved without bumping the day version,
+  // so the coordinating daily.plan keeps its base_version valid.
+  if(status==='succeeded'&&['analysis.fitness','analysis.diet'].includes(actionName)){
+   const col=actionName==='analysis.fitness'?'fitness':'diet';
+   const n=d.prepare(`UPDATE daily_days SET ${col}=?,updated=? WHERE user_id=? AND day=? AND version=?`).run(JSON.stringify(b.output),now,user,r.day,r.base_version);
+   if(!n.changes)fail(409,'每日数据已变化，本次结果已过期，请重新生成');
   }
   return {ok:true,status};
  }
