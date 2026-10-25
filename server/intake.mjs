@@ -4,6 +4,7 @@ import {db,transaction} from './database.mjs';
 import {HttpError} from './auth.mjs';
 import {enqueue,canon} from './life.mjs';
 import {saveRecord} from './records.mjs';
+import {invalidateDomainPlans} from './domain-plans.mjs';
 const fail=(s,m)=>{throw new HttpError(s,m)};
 const hash=x=>createHash('sha256').update(canon(x)).digest('hex');
 export const domains={
@@ -100,6 +101,8 @@ function applyOne(d,user,actor,v,now){
   record_id=record.id;record_version=record.version;
  }
  d.prepare('INSERT INTO intake_fields VALUES(?,?,?,?,?,?,?) ON CONFLICT(user_id,field_key) DO UPDATE SET record_id=excluded.record_id,record_version=excluded.record_version,deferred=excluded.deferred,revision=excluded.revision,evidence=excluded.evidence').run(user,def.key,record_id,record_version,v.operation==='defer'?1:0,field.revision+1,JSON.stringify(evidence));
+ // 阶段 3：关键资料变化 → 受影响领域的已确认方案标记需复核（不删除、不整套重算）。
+ invalidateDomainPlans(d,user,def.domains,new Date(now).toISOString());
  // Invalidate old inference tasks immediately, allowing another executor to take over safely.
  const affected=def.domains;
  for(const j of d.prepare("SELECT id,request FROM agent_jobs WHERE user_id=? AND status IN ('queued','running')").all(user))if(affected.some(x=>JSON.parse(j.request).action==='intake.'+x))d.prepare("UPDATE agent_jobs SET status='cancelled',updated=? WHERE id=?").run(now,j.id);

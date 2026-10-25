@@ -1,9 +1,9 @@
 FROM node:24-bookworm-slim AS deps
 WORKDIR /app
-# npm install (instead of npm ci): the repository keeps package-lock.json locally,
-# but the remote copy may lag package.json; install reconciles and regenerates it.
-COPY package.json ./
-RUN npm install --no-audit --no-fund
+# Locked install: the repository carries the matching package-lock.json (v1.4.2),
+# so the built dependency tree is deterministic and matches local tests.
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
 FROM deps AS builder
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1

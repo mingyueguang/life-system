@@ -22,7 +22,7 @@ test('audit: completed and stale items are blocked from plans; slots are validat
   let d=life.overview(user,day).day;
   d=life.updateDay(user,{day,version:d.version,operation:'input',data:{available_minutes:120,energy:3,fixed:'',note:''}},now);
   const flow=life.generate(user,{day,kind:'plan',version:d.version},now);
-  const outFor=a=>a==='analysis.fitness'?{summary:'F',sessions:[{id:randomUUID(),title:'Run',minutes:30,reason:'g'}],missing:[]}:a==='analysis.diet'?{summary:'D',meals:[{id:randomUUID(),title:'Breakfast',reason:'g'}],missing:[]}:{summary:'A',recommendations:[],missing:[]};
+  const outFor=a=>a==='analysis.fitness'?{summary:'F',sessions:[{id:randomUUID(),title:'Run',minutes:30,reason:'g'}],missing:['训练目标未确认']}:a==='analysis.diet'?{summary:'D',meals:[{id:randomUUID(),title:'Breakfast',reason:'g'}],missing:['饮食目标未确认']}:{summary:'A',recommendations:[],missing:[]};
   for(let i=0;i<3;i++){
    const j=q.claimJob(user,'k0',{},now+i+1).job;assert.ok(j);
    q.updateJob(user,'k0',j.job_id,'result',{lease_token:j.lease_token,status:'succeeded',output:outFor(j.action)},now+i+1);
@@ -77,7 +77,10 @@ test('audit: anomaly signals request confirmation, never silent auto-adjust',asy
   // Recent done titles are a soft signal, not a hard guard.
   assert.ok(ctx.guards.recentDoneTitles.includes('学习'));
   assert.ok(!ctx.guards.completedTitles.includes('学习'));
-  assert.ok(ctx.carryover.some(x=>x.title==='学习'&&x.skipped===2));
+  // Carryover is decided by the LATEST feedback state: 10-18/10-19 skipped but
+  // 10-20..10-24 done → no re-entry, older skips must not resurface (P2-7).
+  assert.ok(!ctx.carryover.some(x=>x.title==='学习'),'最新状态已完成，旧跳过不再结转');
+  assert.equal(ctx.day.anomalies.filter(x=>x.code==='repeated_skip').length,1,'重复跳过提醒仍按最近 7 天统计');
   // Guards hard-block only records marked completed, not recent feedback.
   const guardCodes=ctx.day.audit.map(x=>x.code);
   assert.equal(guardCodes.length,0);
@@ -111,5 +114,17 @@ test('audit: auto_adjust settings control thresholds and carryover; mood/phone/e
   // Defaults keep the original behavior.
   const ctx=life.context(db(),user,day);
   assert.ok(ctx.carryover.some(x=>x.title==='学习'&&x.skipped===2));
+  // P2-8: 总开关 auto_adjust.enabled=false 后异常提醒与结转都停止，但数据保存与核对清单不受影响
+  life.saveSettings(user,{enabled:false,plan_time:'07:00',review_time:'21:00',feishu:false,auto_adjust:{enabled:false,overrun_factor:2,energy_drop_threshold:2,skip_carryover:true}});
+  const off=life.context(db(),user,day);
+  assert.deepEqual(off.day.anomalies,[]);
+  assert.deepEqual(off.carryover,[]);
+  assert.ok(off.recent.length>0,'历史仍可读，开关不影响原始数据');
+  // P1-1: profile 记录与三域资料状态进入规划上下文（含关键缺失清单）
+  insert({id:randomUUID(),kind:'profile',data:{topic:'训练限制',statement:'膝盖不适，避免深蹲',status:'known',note:'资料收集字段：fitness.constraints'}});
+  const withProfile=life.context(db(),user,day);
+  assert.ok(withProfile.records.some(r=>r.kind==='profile'&&r.data.topic==='训练限制'),'profile 进入规划上下文');
+  assert.ok(withProfile.intake.fitness.required_missing.includes('训练目标'),'健身关键资料缺失状态进入上下文');
+  assert.ok(withProfile.intake.diet.required_missing.includes('饮食目标'),'饮食关键资料缺失状态进入上下文');
  }finally{closeDb();rmSync(dir,{recursive:true,force:true})}
 });

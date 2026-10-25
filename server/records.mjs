@@ -6,7 +6,7 @@ import {HttpError} from './auth.mjs';
 const fail=(s,m)=>{throw new HttpError(s,m)};
 const iso=z.string().datetime({offset:true});
 export const sourceSchema=z.object({method:z.enum(['user_report','device','import','ai_inference','unknown']),original_text:z.string().max(20000).default(''),reference:z.string().max(1000).default('')}).strict();
-export const reviewSchema=z.object({status:z.enum(['confirmed','rejected']),actor:z.string().max(80),at:z.string().datetime({offset:true})}).strict();
+export const reviewSchema=z.object({status:z.enum(['confirmed','rejected']),actor:z.string().max(80),at:z.string().datetime({offset:true}),verified_version:z.number().int().min(1).optional()}).strict();
 export const metadataSchema=z.object({occurred_at:iso.nullable().default(null),source:sourceSchema.default({method:'unknown'}),certainty:z.enum(['reported','estimated','inferred','needs_review','unknown']).default('unknown'),field_status:z.record(z.enum(['reported','estimated','inferred','needs_review','unknown'])).default({}),related_ids:z.array(z.string().uuid()).max(100).default([]),review:reviewSchema.nullable().default(null)}).strict();
 const inputSchema=z.object({request_id:z.string().uuid().optional(),id:z.string().uuid(),kind:z.string(),version:z.number().int().min(0),data:z.unknown(),deleted:z.boolean().default(false),metadata:metadataSchema.optional(),reclassify:z.boolean().default(false),source_id:z.string().uuid().optional()}).strict();
 const canonical=v=>JSON.stringify(v,(_,x)=>x&&typeof x==='object'&&!Array.isArray(x)?Object.fromEntries(Object.keys(x).sort().map(k=>[k,x[k]])):x);
@@ -19,7 +19,7 @@ export function createRawInput(user,actor,raw,database=null){
  const v=z.object({request_id:z.string().uuid().optional(),method:z.enum(['user_report','device','import','ai_inference','unknown']).default('user_report'),original_text:z.string().max(20000).default(''),reference:z.string().max(1000).default(''),occurred_at:iso.nullable().default(null),attachments:z.array(z.object({type:z.string().max(50).default('file'),name:z.string().max(200),url:z.string().max(2000)}).strict()).max(20).default([])}).strict().parse(raw);
  if(!v.original_text&&!v.reference&&!v.attachments.length)fail(400,'需要提供原文、引用地址或附件');
  const write=x=>{
-  if(v.request_id){const old=x.prepare('SELECT * FROM raw_inputs WHERE user_id=? AND request_id=?').get(user,v.request_id);if(old){if(old.method!==v.method||old.original_text!==v.original_text||old.reference!==v.reference)fail(409,'请求编号已用于不同原始资料');return {source:rawView(old,countRecords(x,user,old.id)),duplicate:true}}}
+  if(v.request_id){const old=x.prepare('SELECT * FROM raw_inputs WHERE user_id=? AND request_id=?').get(user,v.request_id);if(old){const same=old.method===v.method&&old.original_text===v.original_text&&old.reference===v.reference&&(old.occurred_at??null)===(v.occurred_at??null)&&old.attachments===JSON.stringify(v.attachments);if(!same)fail(409,'请求编号已用于不同原始资料（含来源、时间或附件差异）');return {source:rawView(old,countRecords(x,user,old.id)),duplicate:true}}}
   const id=randomUUID(),at=new Date().toISOString();
   x.prepare('INSERT INTO raw_inputs(id,user_id,request_id,method,original_text,reference,occurred_at,attachments,created_at,actor) VALUES(?,?,?,?,?,?,?,?,?,?)').run(id,user,v.request_id||null,v.method,v.original_text,v.reference,v.occurred_at,JSON.stringify(v.attachments),at,actor);
   return {source:rawView(x.prepare('SELECT * FROM raw_inputs WHERE id=?').get(id),0),duplicate:false};
@@ -58,7 +58,11 @@ export function saveRecord(user,actor,raw,database=null){
   const current=d.prepare('SELECT * FROM records WHERE id=?').get(b.id);
   if(current&&(current.user_id!==user||current.version!==b.version)||!current&&b.version!==0)fail(409,'记录版本冲突，请重新读取后再修改');
   if(current&&current.kind!==b.kind&&!b.reclassify)fail(409,'修改分类需要 reclassify=true，并提交新分类的完整数据');
-  const meta=b.metadata||(current?metadata(d,user,b.id):metadataSchema.parse({}));
+  const submitted=b.metadata?{...b.metadata}:null;if(submitted)delete submitted.review;
+  const previousMeta=current?metadata(d,user,b.id):null;
+  // 用户确认/否定是服务器维护字段：普通写入不可提交；事实内容变化后旧确认标记失效，回退为待核实。
+  const factChanged=!!current&&(JSON.stringify(data)!==current.payload||b.deleted!==!!current.deleted);
+  const meta={...(submitted||previousMeta||metadataSchema.parse({})),review:current&&!factChanged&&previousMeta?.review?previousMeta.review:null};
   if(Object.keys(meta.field_status).some(k=>!Object.hasOwn(data,k)))fail(400,'field_status 只能引用 data 中的字段');
   const references=[...meta.related_ids,...(b.kind==='transaction'&&data.account_id?[data.account_id]:[])];
   for(const id of references){if(id===b.id||!d.prepare('SELECT 1 FROM records WHERE id=? AND user_id=? AND deleted=0').get(id,user))fail(400,'关联记录不存在、已归档或引用自身')}
@@ -75,15 +79,21 @@ export function saveRecord(user,actor,raw,database=null){
  };return database?write(database):transaction(write);
 }
 // User-facing confirmation or rejection of AI-extracted information. Session-only at the route layer.
+// The decision is a server-maintained fact: it bumps the record version, writes history and binds
+// the verified version, so an old request can never overwrite a newer decision.
 export function reviewRecord(user,actor,b){
  const v=z.object({id:z.string().uuid(),version:z.number().int().min(1),decision:z.enum(['confirm','reject'])}).strict().parse(b);
  return transaction(d=>{
   const r=d.prepare('SELECT * FROM records WHERE id=? AND user_id=?').get(v.id,user);if(!r)fail(404,'记录不存在');
   if(r.version!==v.version)fail(409,'记录版本冲突，请重新读取后再修改');
-  const meta=metadata(d,user,v.id);meta.review={status:v.decision==='confirm'?'confirmed':'rejected',actor,at:new Date().toISOString()};
+  const at=new Date().toISOString();
+  d.prepare('INSERT OR IGNORE INTO record_history VALUES(?,?,?,?,?,?)').run(v.id,user,r.version,JSON.stringify(unpack(d,r)),'legacy_snapshot',r.updated_at);
+  d.prepare('UPDATE records SET version=version+1,updated_at=? WHERE id=? AND user_id=?').run(at,v.id,user);
+  const meta=metadata(d,user,v.id);meta.review={status:v.decision==='confirm'?'confirmed':'rejected',actor,at,verified_version:r.version};
   d.prepare('INSERT INTO record_metadata VALUES(?,?,?) ON CONFLICT(record_id) DO UPDATE SET body=excluded.body').run(v.id,user,JSON.stringify(meta));
-  const at=new Date().toISOString();d.prepare('UPDATE records SET updated_at=? WHERE id=? AND user_id=?').run(at,v.id,user);
-  return {record:unpack(d,d.prepare('SELECT * FROM records WHERE id=?').get(v.id))};
+  const record=unpack(d,d.prepare('SELECT * FROM records WHERE id=?').get(v.id));
+  d.prepare('INSERT INTO record_history VALUES(?,?,?,?,?,?)').run(v.id,user,record.version,JSON.stringify(record),actor,at);
+  return {record};
  });
 }
 export function readRecords(user,search){

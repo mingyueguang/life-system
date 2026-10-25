@@ -98,7 +98,7 @@ test('independent account, API permissions, persistence and conflict protection'
     const bad=await req('/api/agent/v1/jobs/'+j.job_id+'/result',{method:'POST',token:worker.data.token,data:{lease_token:j.lease_token,status:'succeeded',output:{summary:'test',recommendations:[]}}});
     assert.equal(bad.status,400);assert.equal(bad.data.code,'VALIDATION_ERROR');assert.ok(bad.data.details.some(x=>x.path==='output.missing'));assert.ok(bad.data.example.output.missing);
    }
-   const output=j.action==='daily.plan'?{summary:'HTTP plan',items:[{id:randomUUID(),title:'Important action',minutes:30,reason:'Goal',task_id:null}],buffer_minutes:15,deferred:[],missing:[]}:j.action==='analysis.fitness'?{summary:'Fitness plan',sessions:[{id:randomUUID(),title:'Run',minutes:30,reason:'Goal'}],missing:[]}:j.action==='analysis.diet'?{summary:'Diet plan',meals:[{id:randomUUID(),title:'Breakfast',reason:'Goal'}],missing:[]}:{summary:'Analysis',recommendations:['Keep buffer'],missing:[]};
+   const output=j.action==='daily.plan'?{summary:'HTTP plan',items:[{id:randomUUID(),title:'Important action',minutes:30,reason:'Goal',task_id:null}],buffer_minutes:15,deferred:[],missing:[]}:j.action==='analysis.fitness'?{summary:'Fitness plan',sessions:[{id:randomUUID(),title:'Run',minutes:30,reason:'Goal'}],missing:['训练目标未确认']}:j.action==='analysis.diet'?{summary:'Diet plan',meals:[{id:randomUUID(),title:'Breakfast',reason:'Goal'}],missing:['饮食目标未确认']}:{summary:'Analysis',recommendations:['Keep buffer'],missing:[]};
    assert.equal((await req('/api/agent/v1/jobs/'+j.job_id+'/result',{method:'POST',token:worker.data.token,data:{lease_token:j.lease_token,status:'succeeded',output}})).status,200);
   }
   overview=await req('/api/agent/v1/overview?day='+day,{cookie});assert.equal(overview.data.day.plan.summary,'HTTP plan');
@@ -144,7 +144,7 @@ test('independent account, API permissions, persistence and conflict protection'
   assert.equal((await req('/api/v1/records/review',{method:'POST',token:write.data.token,data:{id:sleepRec.id,version:1,decision:'confirm'}})).status,401);
   assert.equal((await req('/api/v1/records/review',{method:'POST',cookie,data:{id:sleepRec.id,version:1,decision:'confirm'},requestOrigin:'https://attacker.test'})).status,403);
   const reviewed=await req('/api/v1/records/review',{method:'POST',cookie,data:{id:sleepRec.id,version:1,decision:'confirm'}});assert.equal(reviewed.status,200);assert.equal(reviewed.data.record.metadata.review.status,'confirmed');
-  assert.equal((await req('/api/v1/records/review',{method:'POST',cookie,data:{id:sleepRec.id,version:2,decision:'reject'}})).status,409);
+  assert.equal((await req('/api/v1/records/review',{method:'POST',cookie,data:{id:sleepRec.id,version:1,decision:'reject'}})).status,409);
   // 归档后普通列表排除，原始资料仍列出（审计保留）
   assert.equal((await req('/api/v1/records',{method:'POST',token:write.data.token,data:{...runRec,request_id:randomUUID(),version:1,deleted:true}})).status,200);
   assert.equal((await req('/api/v1/records',{cookie})).data.records.length,2,'provenance 与 sleepRec 可见，runRec 已归档');

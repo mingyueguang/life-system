@@ -1,4 +1,5 @@
 import {validateIntake,storeIntake,intakeSnapshot} from './intake.mjs';
+import {savePlan} from './domain-plans.mjs';
 import {contract} from './protocol.mjs';
 import {randomUUID} from 'node:crypto';
 import {db,transaction} from './database.mjs';
@@ -62,19 +63,38 @@ export function claimJob(user,key,b,now=Date.now()){
  return {job:null,reason:executor?'no_eligible_task':'registration_required_for_live_jobs',next:executor?null:{method:'POST',path:'/api/agent/v1/executors/register',example:{name:'平台和账号标识',capabilities:['analysis'],max_parallel:1}},protocol_url:'/api/agent/v1/protocol'};
  });
 }
+// 阶段 2：关键资料未确认时，方案必须显式声明缺失，禁止输出确定性方案（可保留候选，但不得宣称完整）。
+function requireMissing(req,domain,output){
+ const intake=req.payload.context?.intake?.[domain];
+ const missing=Array.isArray(intake?.required_missing)?intake.required_missing:[];
+ if(missing.length&&!(Array.isArray(output.missing)&&output.missing.length))fail(400,'关键资料缺失（'+missing.join('、')+'）时必须列出 missing，不能输出确定性方案');
+}
 function validateOutput(d,user,r,output){
  const req=JSON.parse(r.request);
  if(req.action.startsWith('intake.')){validateIntake(d,user,r,output);return}
  if(req.action==='simulation.noop'){if(output.simulated!==true||output.external_effect!==false)fail(400,'模拟结果必须声明 simulated=true、external_effect=false');return}
- if(req.action==='analysis.fitness')fitnessPlanSchema.parse(output);
- else if(req.action==='analysis.diet')dietPlanSchema.parse(output);
+ if(req.action==='analysis.fitness'){fitnessPlanSchema.parse(output);requireMissing(req,'fitness',output)}
+ else if(req.action==='analysis.diet'){dietPlanSchema.parse(output);requireMissing(req,'diet',output)}
  else if(req.action.startsWith('analysis.'))analysisSchema.parse(output);
  if(req.action==='daily.plan'){
   const p=planSchema.parse(output),available=req.payload.context.day.input.available_minutes;
   if(new Set(p.items.map(x=>x.id)).size!==p.items.length)fail(400,'计划事项 ID 重复');
   if(available!==null&&p.items.reduce((n,x)=>n+x.minutes,0)+p.buffer_minutes>available)fail(400,'计划超过当天可用时间');
   if(available===null&&!p.missing.length)fail(400,'可用时间未知，需要列入缺失信息');
-  const tasks=req.payload.context.records.filter(x=>x.kind==='task');if(p.items.some(x=>x.task_id&&!tasks.some(t=>t.id===x.task_id&&!t.data.done)))fail(400,'关联待办不存在或已经完成');
+  const tasks=req.payload.context.records.filter(x=>x.kind==='task');
+  // 否定记录与已完成待办不能作为有效引用；source_id 必须指向被选中的前置方案事项。
+  if(p.items.some(x=>x.task_id&&!tasks.some(t=>t.id===x.task_id&&!t.data.done&&t.metadata?.review?.status!=='rejected')))fail(400,'关联待办不存在、已经完成或已被否定');
+  const depResults=JSON.parse(r.dependencies).map(id=>d.prepare('SELECT request,result FROM agent_jobs WHERE id=? AND user_id=?').get(id,user)).filter(Boolean).map(x=>({action:JSON.parse(x.request).action,result:JSON.parse(x.result)}));
+  // source_id 必须命中本次前置分析项或已确认领域方案项（阶段 3 沿用）。
+  const confirmedPlans=req.payload.confirmed_plans||{};
+  const sourceOk=i=>{
+   if(!i.source_id)return true;
+   if(depResults.some(dr=>{const o=dr.result?.output||{};const list=dr.action==='analysis.fitness'?o.sessions:dr.action==='analysis.diet'?o.meals:null;return !!list&&list.some(x=>x.id===i.source_id);}))return true;
+   const cp=confirmedPlans[i.domain];if(!cp)return false;
+   const items=i.domain==='fitness'?cp.plan.sessions:i.domain==='diet'?cp.plan.meals:cp.plan.recommendations||[];
+   return Array.isArray(items)&&items.some(x=>x?.id===i.source_id);
+  };
+  if(p.items.some(i=>!sourceOk(i)))fail(400,'计划事项引用的专业方案项不存在');
   if(req.payload.context.records_version!==fingerprint(records(d,user)))fail(409,'业务数据已变化，请重新生成计划');
  }
  if(req.action==='daily.review')reviewSchema.parse(output);
@@ -100,6 +120,7 @@ export function updateJob(user,key,id,action,b,now=Date.now()){
   d.prepare('UPDATE agent_jobs SET status=?,result=?,updated=? WHERE id=?').run(status,canon({status,output:b.output}),now,id);audit(d,user,'result:'+status,id,now);
   const actionName=JSON.parse(r.request).action;
   if(status==='succeeded'&&actionName.startsWith('intake.'))storeIntake(d,user,r,b.output,now);
+  if(status==='succeeded'&&actionName.startsWith('analysis.'))savePlan(d,user,actionName.slice('analysis.'.length),{plan:b.output,source_job_id:r.id},new Date(now).toISOString());
   if(status==='succeeded'&&['daily.plan','daily.review'].includes(actionName)){
    const col=actionName==='daily.plan'?'plan':'review';
    d.prepare(`UPDATE daily_days SET ${col}=?,version=version+1,updated=? WHERE user_id=? AND day=? AND version=?`).run(JSON.stringify(b.output),now,user,r.day,r.base_version);

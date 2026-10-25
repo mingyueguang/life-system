@@ -64,6 +64,20 @@ export function migrate(database){
     INSERT INTO schema_migrations VALUES(7);
    `);
   }
+  if(!database.prepare('SELECT 1 FROM schema_migrations WHERE version=8').get()){
+   database.exec(`
+    CREATE TABLE domain_plans(user_id TEXT NOT NULL REFERENCES users(id),domain TEXT NOT NULL CHECK(domain IN ('work','fitness','diet')),version INTEGER NOT NULL,body TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('candidate','confirmed','needs_review','superseded','rejected')),confirmed_at TEXT,review_at TEXT NOT NULL,source_job_id TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(user_id,domain,version));
+    CREATE INDEX idx_domain_plans_latest ON domain_plans(user_id,domain,status,version);
+    INSERT INTO schema_migrations VALUES(8);
+   `);
+  }
+  if(!database.prepare('SELECT 1 FROM schema_migrations WHERE version=9').get()){
+   database.exec(`
+    CREATE TABLE domain_state_log(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id TEXT NOT NULL,day TEXT NOT NULL,domain TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('insufficient','normal','attention','adjust')),decision TEXT NOT NULL CHECK(decision IN ('reuse','analyze')),reasons TEXT NOT NULL DEFAULT '[]',missing TEXT NOT NULL DEFAULT '[]',plan_version INTEGER,plan_review_at TEXT,created_at TEXT NOT NULL);
+    CREATE INDEX idx_domain_state_log_lookup ON domain_state_log(user_id,day,domain,id);
+    INSERT INTO schema_migrations VALUES(9);
+   `);
+  }
   database.exec('COMMIT');
  }catch(e){database.exec('ROLLBACK');throw e}
 }
