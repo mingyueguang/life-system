@@ -31,6 +31,15 @@ export function migrate(database){
     INSERT INTO schema_migrations VALUES(3);
    `);
   }
+  if(!database.prepare('SELECT 1 FROM schema_migrations WHERE version=4').get()){
+   database.exec(`
+    CREATE TABLE record_metadata(record_id TEXT PRIMARY KEY,user_id TEXT NOT NULL,body TEXT NOT NULL);
+    CREATE TABLE record_history(record_id TEXT NOT NULL,user_id TEXT NOT NULL,version INTEGER NOT NULL,snapshot TEXT NOT NULL,actor TEXT NOT NULL,changed_at TEXT NOT NULL,PRIMARY KEY(record_id,version));
+    CREATE TABLE record_requests(user_id TEXT NOT NULL,request_id TEXT NOT NULL,hash TEXT NOT NULL,response TEXT NOT NULL,PRIMARY KEY(user_id,request_id));
+    CREATE INDEX idx_record_history_user ON record_history(user_id,record_id,version);
+    INSERT INTO schema_migrations VALUES(4);
+   `);
+  }
   database.exec('COMMIT');
  }catch(e){database.exec('ROLLBACK');throw e}
 }

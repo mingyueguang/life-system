@@ -52,8 +52,8 @@ test('daily workflow: identities, actual concurrent claims, handoff, feedback, s
  assert.throws(()=>q.updateJob(user,'k0',last.job_id,'result',{lease_token:last.lease_token,status:'succeeded',output:{...plan,missing:['可用时间未知']}},now+130006),e=>e.status===409);
  // Safe analysis expires and can be picked up by another identity; old lease cannot submit.
  life.generate(user,{day:next,version:nd.version,kind:'plan'},now+140000);
- const a=q.claimJob(user,'k1',{},now+140001).job;const b=q.claimJob(user,'k2',{job_id:a.job_id},now+260002).job;assert.equal(b.job_id,a.job_id);assert.notEqual(b.lease_token,a.lease_token);
- assert.throws(()=>q.updateJob(user,'k1',a.job_id,'result',{lease_token:a.lease_token,status:'succeeded',output:analysis},now+260003),e=>e.status===404);
+ const a=q.claimJob(user,'k1',{},now+140001).job;const b=q.claimJob(user,'k2',{job_id:a.job_id},now+740002).job;assert.equal(b.job_id,a.job_id);assert.notEqual(b.lease_token,a.lease_token);
+ assert.throws(()=>q.updateJob(user,'k1',a.job_id,'result',{lease_token:a.lease_token,status:'succeeded',output:analysis},now+740003),e=>e.status===404);
  // Scheduler is durable and idempotent across repeated ticks.
  life.saveSettings(user,{enabled:true,plan_time:'00:00',review_time:'23:59',feishu:false});const scheduled=Date.parse('2026-10-27T00:00:00Z');assert.equal(life.tick(scheduled).created,1);assert.equal(life.tick(scheduled).created,0);closeDb();assert.equal(life.tick(scheduled).created,0);
  const sd='2026-10-27';

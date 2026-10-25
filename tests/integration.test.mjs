@@ -25,6 +25,7 @@ test('independent account, API permissions, persistence and conflict protection'
     const r=await fetch(`http://127.0.0.1:${port}${path}`,{method,headers,body:data===undefined?undefined:JSON.stringify(data)});return {status:r.status,data:await r.json(),cookie:r.headers.get('set-cookie')};
   }
   await start();
+  const protocol=await req('/api/agent/v1/');assert.equal(protocol.status,200);assert.ok(protocol.data.actions['daily.plan'].output_schema.required.includes('items'));
   assert.equal((await req('/api/v1/records')).status,401);
   assert.equal((await req('/api/auth/status')).data.registered,false);
   const email='owner@example.test',password='Long-test-password-123!';
@@ -56,6 +57,11 @@ test('independent account, API permissions, persistence and conflict protection'
   assert.equal((await req('/api/agent/v1/jobs/claim',{method:'POST',token:worker2.data.token,data:{job_id:job.data.job_id}})).data.job,null);
   const claims=await Promise.all(Array.from({length:8},()=>req('/api/agent/v1/jobs/claim',{method:'POST',token:worker.data.token,data:{job_id:job.data.job_id}})));
   const claimed=claims.map(c=>c.data.job).filter(Boolean);assert.equal(claimed.length,1);
+  const recovery=await req('/api/agent/v1/jobs/active',{token:worker.data.token});assert.equal(recovery.data.jobs[0].lease_token,claimed[0].lease_token);assert.equal(recovery.data.jobs[0].lease_expires_at,claimed[0].lease_expires_at);
+  assert.equal((await req('/api/agent/v1/jobs/active',{token:worker2.data.token})).data.jobs.length,0);
+  assert.equal((await req('/api/agent/v1/jobs/active',{token:read.data.token})).status,403);
+  assert.ok(claimed[0].contract.success_example);
+
   const result={lease_token:claimed[0].lease_token,status:'succeeded',output:{simulated:true,external_effect:false,executor:'test'}};
   const resultUrl='/api/agent/v1/jobs/'+job.data.job_id+'/result';
   assert.equal((await req(resultUrl,{method:'POST',token:worker2.data.token,data:result})).status,404);
@@ -84,6 +90,10 @@ test('independent account, API permissions, persistence and conflict protection'
   for(let i=0;i<3;i++){
    const c=await req('/api/agent/v1/jobs/claim',{method:'POST',token:worker.data.token,data:{}});assert.equal(c.status,200);assert.ok(c.data.job);
    const j=c.data.job;
+   if(i===0){
+    const bad=await req('/api/agent/v1/jobs/'+j.job_id+'/result',{method:'POST',token:worker.data.token,data:{lease_token:j.lease_token,status:'succeeded',output:{summary:'test',recommendations:[]}}});
+    assert.equal(bad.status,400);assert.equal(bad.data.code,'VALIDATION_ERROR');assert.ok(bad.data.details.some(x=>x.path==='output.missing'));assert.ok(bad.data.example.output.missing);
+   }
    const output=j.action==='daily.plan'?{summary:'HTTP plan',items:[{id:randomUUID(),title:'Important action',minutes:30,reason:'Goal',task_id:null}],buffer_minutes:15,deferred:[],missing:[]}:{summary:'Analysis',recommendations:['Keep buffer'],missing:[]};
    assert.equal((await req('/api/agent/v1/jobs/'+j.job_id+'/result',{method:'POST',token:worker.data.token,data:{lease_token:j.lease_token,status:'succeeded',output}})).status,200);
   }
@@ -106,6 +116,12 @@ test('independent account, API permissions, persistence and conflict protection'
   const deleted=await req('/api/v1/records',{method:'POST',token:write.data.token,data:{...record,version:2,deleted:true}});assert.equal(deleted.status,200);
   assert.equal((await req('/api/v1/records',{cookie})).data.records.length,0);
   assert.equal((await req('/api/v1/records?since=2000-01-01T00%3A00%3A00.000Z',{cookie})).data.records[0].deleted,true);
+  const schema=await req('/api/v1/schema',{token:write.data.token});assert.equal(schema.status,200);assert.ok(schema.data.schemas.mood.properties.text);assert.ok(schema.data.metadataSchema.properties.source);
+  const provenance={request_id:randomUUID(),id:randomUUID(),kind:'phone_usage',version:0,data:{date:'2026-10-25',minutes:90},metadata:{source:{method:'device',original_text:'设备统计 90 分钟'}}};
+  assert.equal((await req('/api/v1/records',{method:'POST',token:write.data.token,data:provenance})).status,200);
+  assert.equal((await req('/api/v1/records',{method:'POST',token:write.data.token,data:provenance})).data.duplicate,true);
+  assert.equal((await req('/api/v1/records?id='+provenance.id+'&history=true',{token:write.data.token})).data.history.length,1);
+  const malformed=await fetch(`http://127.0.0.1:${port}/api/v1/records`,{method:'POST',headers:{Authorization:'Bearer '+write.data.token,'Content-Type':'application/json'},body:'{"secret":"do-not-echo",}'});const malformedBody=await malformed.json();assert.equal(malformed.status,400);assert.equal(malformedBody.code,'INVALID_JSON');assert.ok(!JSON.stringify(malformedBody).includes('do-not-echo'));
   const changed=await req('/api/auth/password',{method:'POST',cookie,data:{currentPassword:password,password:'New-long-test-password!'}});assert.equal(changed.status,200);
   assert.equal((await req('/api/v1/records',{cookie:secondCookie})).status,401);
   const newCookie=changed.cookie.split(';')[0];

@@ -1,11 +1,14 @@
+import {protocol} from '@/server/protocol.mjs';
 import {authorize,HttpError} from '@/server/auth.mjs';
 import {json,body,failure} from '@/server/http.mjs';
-import {listJobs,createJob,claimJob,updateJob,resolveJob,saveEvent} from '@/server/agent-jobs.mjs';
+import {activeJobs,listJobs,createJob,claimJob,updateJob,resolveJob,saveEvent} from '@/server/agent-jobs.mjs';
 import {overview,updateDay,generate,registerExecutor,setExecutor,saveSettings,today,tick} from '@/server/life.mjs';
 export const runtime='nodejs';export const dynamic='force-dynamic';
 export async function GET(req:Request){try{
  const url=new URL(req.url),path=url.pathname;
- if(path==='/api/agent/v1/health')return json({status:'ok',api_version:1,mode:'collaboration',model_connected:false,auth:'site_api_keys',release:'1.2.0'});
+ if(path==='/api/agent/v1/health')return json({status:'ok',api_version:1,mode:'collaboration',model_connected:false,auth:'site_api_keys',release:'1.3.0-dev',protocol_url:'/api/agent/v1/protocol'});
+ if(path==='/api/agent/v1'||path==='/api/agent/v1/'||path==='/api/agent/v1/protocol')return json(protocol());
+ if(path==='/api/agent/v1/jobs/active'){const u=authorize(req,{workerOnly:true});return json(activeJobs(u.id,u.keyId))}
  const u=authorize(req);
  if(path==='/api/agent/v1/jobs')return json(listJobs(u.id));
  if(path==='/api/agent/v1/overview')return json(overview(u.id,url.searchParams.get('day')||today()));
@@ -17,7 +20,7 @@ export async function POST(req:Request){try{
  const worker=path.endsWith('/jobs/claim')||path.endsWith('/executors/register')||path.endsWith('/events')||m&&['heartbeat','result'].includes(m[2]);
  const admin=path.endsWith('/settings')||path.endsWith('/executors/update');
  const u=worker?authorize(req,{workerOnly:true}):authorize(req,{write:true,sessionOnly:admin});
- const data=await body(req);
+ const data=await body(req,256000);
  if(path==='/api/agent/v1/jobs')return json(createJob(u.id,data),201);
  if(path==='/api/agent/v1/jobs/claim'){tick();return json(claimJob(u.id,u.keyId,data))}
  if(path==='/api/agent/v1/events')return json(saveEvent(u.id,u.keyId,data));

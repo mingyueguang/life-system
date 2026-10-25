@@ -1,6 +1,8 @@
+import {contract} from './protocol.mjs';
 import {randomUUID} from 'node:crypto';
 import {db,transaction} from './database.mjs';
 import {fail,canon,planSchema,analysisSchema,reviewSchema,publishSchema,records,fingerprint} from './life.mjs';
+const leaseMs=r=>JSON.parse(r.request).mode==='live'&&!r.effect?600000:120000;
 const str=(v,max=200)=>typeof v==='string'&&v.length>0&&v.length<=max;
 const obj=v=>v!==null&&typeof v==='object'&&!Array.isArray(v);
 const view=r=>({job_id:r.id,target_key_id:r.target_key_id,executor_id:r.claimed_key_id,...JSON.parse(r.request),status:r.status,dependencies:JSON.parse(r.dependencies),attempts:r.attempts,day:r.day,result:r.result?JSON.parse(r.result):null,created_at:r.created,updated_at:r.updated});
@@ -39,19 +41,19 @@ export function claimJob(user,key,b,now=Date.now()){
  if(executor&&!executor.enabled)fail(403,'执行者已暂停');
  if(executor)d.prepare('UPDATE executors SET last_seen=? WHERE key_id=?').run(now,key);
  const running=d.prepare("SELECT COUNT(*) n FROM agent_jobs WHERE user_id=? AND claimed_key_id=? AND status='running'").get(user,key).n;
- if(running>=(executor?.max_parallel||1))return {job:null,reason:'capacity',active_jobs:d.prepare("SELECT id,expires FROM agent_jobs WHERE claimed_key_id=? AND status='running'").all(key)};
+ if(running>=(executor?.max_parallel||1))return {job:null,reason:'capacity',recover_url:'/api/agent/v1/jobs/active',active_jobs:d.prepare("SELECT id,expires FROM agent_jobs WHERE claimed_key_id=? AND status='running'").all(key)};
  const caps=executor?JSON.parse(executor.capabilities):[];
  const rows=d.prepare("SELECT * FROM agent_jobs WHERE user_id=? AND (target_key_id=? OR target_key_id='*') AND status='queued' ORDER BY created,id").all(user,key);
  for(const r of rows){
   if(b.job_id&&b.job_id!==r.id)continue;
   const request=JSON.parse(r.request);if(request.mode==='live'&&!caps.includes(r.capability))continue;
   const deps=JSON.parse(r.dependencies).map(id=>d.prepare('SELECT * FROM agent_jobs WHERE id=? AND user_id=?').get(id,user));if(deps.some(x=>x?.status!=='succeeded'))continue;
-  const lease=randomUUID(),expires=now+120000;
+  const lease=randomUUID(),expires=now+leaseMs(r);
   d.prepare("UPDATE agent_jobs SET status='running',claimed_key_id=?,lease=?,expires=?,attempts=attempts+1,updated=? WHERE id=?").run(key,lease,expires,now,r.id);audit(d,user,'claimed',r.id,now);
-  const job={...view({...r,status:'running',claimed_key_id:key,attempts:r.attempts+1,updated:now}),lease_token:lease,lease_expires_at:expires,dependency_results:deps.map(x=>({job_id:x.id,action:JSON.parse(x.request).action,result:JSON.parse(x.result)}))};
+  const job={...view({...r,status:'running',claimed_key_id:key,attempts:r.attempts+1,updated:now}),lease_token:lease,lease_expires_at:expires,heartbeat_interval_seconds:30,contract:contract(request.action),dependency_results:deps.map(x=>({job_id:x.id,action:JSON.parse(x.request).action,result:JSON.parse(x.result)}))};
   return {job};
  }
- return {job:null,reason:executor?'no_eligible_task':'registration_required_for_live_jobs'};
+ return {job:null,reason:executor?'no_eligible_task':'registration_required_for_live_jobs',next:executor?null:{method:'POST',path:'/api/agent/v1/executors/register',example:{name:'平台和账号标识',capabilities:['analysis'],max_parallel:1}},protocol_url:'/api/agent/v1/protocol'};
  });
 }
 function validateOutput(d,user,r,output){
@@ -83,7 +85,7 @@ export function updateJob(user,key,id,action,b,now=Date.now()){
   const status=r.effect&&b.status==='failed'?'needs_review':b.status;
   const result=canon({status,output:b.output});if(r.result===result)return {ok:true,duplicate:true};
   if(r.status!=='running'||r.expires<=now)fail(409,'任务已结束或领取超时，需核对后处理');
-  if(b.status==='succeeded')validateOutput(d,user,r,b.output);
+  if(b.status==='succeeded'){try{validateOutput(d,user,r,b.output)}catch(e){if(e?.name==='ZodError'){e.issues.forEach(i=>i.path.unshift('output'));e.example=contract(JSON.parse(r.request).action).success_example}throw e}}
   d.prepare('UPDATE agent_jobs SET status=?,result=?,updated=? WHERE id=?').run(status,canon({status,output:b.output}),now,id);audit(d,user,'result:'+status,id,now);
   const actionName=JSON.parse(r.request).action;
   if(status==='succeeded'&&['daily.plan','daily.review'].includes(actionName)){
@@ -93,7 +95,7 @@ export function updateJob(user,key,id,action,b,now=Date.now()){
   return {ok:true,status};
  }
  if(action!=='heartbeat')fail(404,'未知操作');if(r.status!=='running'||r.expires<=now)fail(409,'领取已超时');
- d.prepare('UPDATE agent_jobs SET expires=?,updated=? WHERE id=?').run(now+120000,now,id);d.prepare('UPDATE executors SET last_seen=? WHERE key_id=?').run(now,key);return {lease_expires_at:now+120000};});
+ d.prepare('UPDATE agent_jobs SET expires=?,updated=? WHERE id=?').run(now+leaseMs(r),now,id);d.prepare('UPDATE executors SET last_seen=? WHERE key_id=?').run(now,key);return {lease_expires_at:now+leaseMs(r)};});
 }
 export function resolveJob(user,id,b,now=Date.now()){
  if(!obj(b)||!['cancel','requeue'].includes(b.decision)||!str(b.reason,2000))fail(400,'需提供处理方式和原因');
@@ -110,4 +112,11 @@ export function resolveJob(user,id,b,now=Date.now()){
 export function saveEvent(user,key,b,now=Date.now()){
  if(!obj(b)||!str(b.event_id)||b.type!=='simulation.feedback'||!obj(b.data))fail(400,'仅支持 simulation.feedback，真实反馈使用 daily/update');
  return transaction(d=>{const data=canon(b),old=d.prepare('SELECT * FROM agent_events WHERE id=?').get(b.event_id);if(old){if(old.user_id!==user||old.key_id!==key||old.body!==data)fail(409,'事件编号冲突');return {ok:true,duplicate:true}}d.prepare('INSERT INTO agent_events VALUES(?,?,?,?,?)').run(b.event_id,user,key,data,now);return {ok:true}});
+}
+
+export function activeJobs(user,key,now=Date.now()){
+ return transaction(d=>{maintain(d,user,now);
+ const jobs=d.prepare("SELECT * FROM agent_jobs WHERE user_id=? AND claimed_key_id=? AND status='running' AND expires>?").all(user,key,now).map(r=>({...view(r),lease_token:r.lease,lease_expires_at:r.expires,remaining_seconds:Math.ceil((r.expires-now)/1000),heartbeat_interval_seconds:30,contract:contract(JSON.parse(r.request).action),dependency_results:JSON.parse(r.dependencies).map(id=>{const dep=d.prepare('SELECT request,result FROM agent_jobs WHERE id=? AND user_id=?').get(id,user);return {job_id:id,action:JSON.parse(dep.request).action,result:JSON.parse(dep.result)}})}));
+ return {jobs,recovery:'返回原租约，不续期、不重置任务。若外部操作可能已完成，先核对结果，勿重复执行。'};
+ });
 }
