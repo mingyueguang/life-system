@@ -5,6 +5,9 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {spawn} from 'node:child_process';
+// 批次 A 资料门槛：缺关键资料的领域事项不能进入正式执行清单。测试补全所需资料字段。
+const answerIntake=async(intakeM,conn,user,pairs,now)=>{let t=now;for(const [key,answer] of pairs){const domain=key==='shared.time'?'work':key.split('.')[0];const f=intakeM.intakeOverview(user,domain,conn).fields.find(x=>x.key===key);intakeM.updateIntake(user,'website',{request_id:randomUUID(),domain,field_key:key,token:f.token,operation:'answer',answer},++t)}return t};
+const ALL_FIELDS=[['shared.time','晚上八点后有空'],['work.goal','推进人生管理系统'],['work.current','系统开发中'],['fitness.goal','增肌'],['fitness.baseline','每周三次力量训练'],['fitness.constraints','无运动限制'],['diet.goal','补充碳水和蛋白质'],['diet.routine','自己做饭加外卖'],['diet.constraints','无饮食限制']];
 test('daily workflow: identities, actual concurrent claims, handoff, feedback, stale data and side effects',async()=>{
  const dir=mkdtempSync(join(tmpdir(),'life-flow-'));process.env.DATABASE_PATH=join(dir,'life.sqlite');
  const {db,closeDb}=await import('../server/database.mjs');const life=await import('../server/life.mjs');const q=await import('../server/agent-jobs.mjs');
@@ -13,7 +16,9 @@ test('daily workflow: identities, actual concurrent claims, handoff, feedback, s
  db().prepare('INSERT INTO users VALUES(?,?,?,?)').run(user,'test@example.test','hash','date');
  for(let i=0;i<12;i++){db().prepare('INSERT INTO api_keys VALUES(?,?,?,?,?,?,?)').run('k'+i,'hash'+i,user,'AI '+i,'write','date',now+365*86400000);life.registerExecutor(user,'k'+i,{name:'AI '+i,capabilities:i===11?['feishu']:['analysis'],max_parallel:i===11?3:1},now)}
  let d=life.overview(user,day).day;d=life.updateDay(user,{day,version:d.version,operation:'input',data:{available_minutes:120,energy:3,fixed:'',note:''}},now);
- const flow=life.generate(user,{day,kind:'plan',version:d.version},now);assert.equal(life.generate(user,{day,kind:'plan',version:d.version},now).job_id,flow.job_id);
+ const intakeM=await import('../server/intake.mjs');
+ const t1=await answerIntake(intakeM,db(),user,ALL_FIELDS,now);
+ const flow=life.generate(user,{day,kind:'plan',version:d.version},t1);assert.equal(life.generate(user,{day,kind:'plan',version:d.version},t1).job_id,flow.job_id);
  assert.equal(q.claimJob(user,'k11',{},now).job,null);
  // Independent OS processes compete against the same SQLite file, not just sequential mocks.
  const results=await Promise.all(Array.from({length:10},(_,i)=>new Promise((resolve,reject)=>{
@@ -23,7 +28,7 @@ test('daily workflow: identities, actual concurrent claims, handoff, feedback, s
  const claims=results.map((x,i)=>({job:x.job,key:'k'+i})).filter(x=>x.job);assert.equal(claims.length,3);assert.equal(new Set(claims.map(x=>x.job.job_id)).size,3);
  assert.equal(q.claimJob(user,claims[0].key,{},now).reason,'capacity');
  const fitItem=randomUUID(),mealItem=randomUUID();
- const outFor=a=>a==='analysis.fitness'?{summary:'训练安排',sessions:[{id:fitItem,title:'力量训练',minutes:30,reason:'目标'}],missing:['训练目标未确认，此为候选']}:a==='analysis.diet'?{summary:'饮食安排',meals:[{id:mealItem,title:'早餐',reason:'目标'}],missing:['饮食目标未确认，此为候选']}:{summary:'根据目标与精力安排',recommendations:['留出机动时间'],missing:[]};
+ const outFor=a=>a==='analysis.fitness'?{summary:'训练安排',sessions:[{id:fitItem,title:'力量训练',minutes:30,reason:'目标'}],missing:[]}:a==='analysis.diet'?{summary:'饮食安排',meals:[{id:mealItem,title:'早餐',reason:'目标'}],missing:[]}:{summary:'根据目标与精力安排',items:[{id:randomUUID(),title:'留出机动时间',reason:'避免过载'}],missing:[]};
  for(const c of claims)q.updateJob(user,c.key,c.job.job_id,'result',{lease_token:c.job.lease_token,status:'succeeded',output:outFor(c.job.action)},now+1);
  const final=q.claimJob(user,'k0',{},now+2).job;assert.equal(final.action,'daily.plan');assert.equal(final.dependency_results.length,3);
  const item=randomUUID();const plan={summary:'完成重要行动',items:[
@@ -117,9 +122,11 @@ test('plan: publish and display derive from the confirmed snapshot only; unselec
   life.registerExecutor(user,'k0',{name:'AI',capabilities:['analysis','feishu'],max_parallel:1},now);
   life.saveSettings(user,{enabled:false,plan_time:'07:00',review_time:'21:00',feishu:true});
   let d=life.overview(user,day).day;d=life.updateDay(user,{day,version:d.version,operation:'input',data:{available_minutes:60,energy:3,fixed:'',note:''}},now);
-  const flow=life.generate(user,{day,kind:'plan',version:d.version},now);
+  const intakeM=await import('../server/intake.mjs');
+  const t1=await answerIntake(intakeM,db(),user,[['shared.time','晚上八点后有空'],['work.goal','推进目标'],['work.current','进行中']],now);
+  const flow=life.generate(user,{day,kind:'plan',version:d.version},t1);
   const fitItem=randomUUID();
-  const outFor=a=>a==='analysis.fitness'?{summary:'训练安排',sessions:[{id:fitItem,title:'力量训练',minutes:60,reason:'目标'}],missing:['训练目标未确认，此为候选']}:a==='analysis.diet'?{summary:'饮食安排',meals:[{id:randomUUID(),title:'早餐',reason:'目标'}],missing:['饮食目标未确认，此为候选']}:{summary:'工作分析',recommendations:[],missing:[]};
+  const outFor=a=>a==='analysis.fitness'?{summary:'训练安排',sessions:[{id:fitItem,title:'力量训练',minutes:60,reason:'目标'}],missing:['训练目标未确认，此为候选']}:a==='analysis.diet'?{summary:'饮食安排',meals:[{id:randomUUID(),title:'早餐',reason:'目标'}],missing:['饮食目标未确认，此为候选']}:{summary:'工作分析',items:[],missing:[]};
   for(let i=0;i<3;i++){const j=q.claimJob(user,'k0',{},now+i+1).job;assert.ok(j);q.updateJob(user,'k0',j.job_id,'result',{lease_token:j.lease_token,status:'succeeded',output:outFor(j.action)},now+i+1)}
   const final=q.claimJob(user,'k0',{},now+5).job;assert.equal(final.action,'daily.plan');
   // 统筹只选中工作，deferred 明确取消训练；专业方案仍作为候选保存（前置中间品）
@@ -147,14 +154,17 @@ test('stage2: key facts missing → deterministic plans rejected unless missing 
   life.registerExecutor(user,'k0',{name:'AI',capabilities:['analysis','feishu'],max_parallel:1},now);
   life.saveSettings(user,{enabled:false,plan_time:'07:00',review_time:'21:00',feishu:true});
   let d=life.overview(user,day).day;d=life.updateDay(user,{day,version:d.version,operation:'input',data:{available_minutes:90,energy:3,fixed:'',note:''}},now);
-  life.generate(user,{day,kind:'plan',version:d.version},now);
+  // 工作域资料具备条件（不受其他领域缺资料影响）；fitness/diet 保持缺资料。
+  const intakeM=await import('../server/intake.mjs');
+  const t1=await answerIntake(intakeM,db(),user,[['shared.time','晚上八点后有空'],['work.goal','推进目标'],['work.current','进行中']],now);
+  life.generate(user,{day,kind:'plan',version:d.version},t1);
   // 无任何资料：fitness/diet 的 required_missing 非空（训练目标/饮食目标等）。max_parallel=1，同一执行者串行处理，领取顺序不预设
   const bad=a=>a==='analysis.fitness'?{summary:'训练安排',sessions:[{id:randomUUID(),title:'力量训练',minutes:30,reason:'目标'}],missing:[]}:{summary:'饮食安排',meals:[{id:randomUUID(),title:'早餐',reason:'目标'}],missing:[]};
   const fitOut=a=>a==='analysis.fitness'?{summary:'训练候选',sessions:[{id:randomUUID(),title:'力量训练',minutes:30,reason:'候选'}],missing:['训练目标未确认，暂无法制定完整方案']}:{summary:'饮食候选',meals:[{id:randomUUID(),title:'早餐',reason:'候选'}],missing:['饮食目标未确认，暂无法制定完整方案']};
   let t=now;
   for(let i=0;i<3;i++){
    const j=q.claimJob(user,'k0',{},++t).job;assert.ok(j,'第 '+(i+1)+' 个分析任务可领取');
-   if(j.action==='analysis.work'){q.updateJob(user,'k0',j.job_id,'result',{lease_token:j.lease_token,status:'succeeded',output:{summary:'工作分析',recommendations:['留出机动'],missing:[]}},++t);continue}
+   if(j.action==='analysis.work'){q.updateJob(user,'k0',j.job_id,'result',{lease_token:j.lease_token,status:'succeeded',output:{summary:'工作分析',items:[{id:randomUUID(),title:'留出机动',reason:'候选'}],missing:[]}},++t);continue}
    assert.throws(()=>q.updateJob(user,'k0',j.job_id,'result',{lease_token:j.lease_token,status:'succeeded',output:bad(j.action)},++t),e=>e.status===400,'缺关键资料时确定性方案必须被拒绝');
    q.updateJob(user,'k0',j.job_id,'result',{lease_token:j.lease_token,status:'succeeded',output:fitOut(j.action)},++t);
   }
@@ -166,7 +176,6 @@ test('stage2: key facts missing → deterministic plans rejected unless missing 
   assert.equal(confirmed.fitness,null,'缺资料领域不产生展示方案');
   assert.equal(confirmed.diet,null,'缺资料领域不产生展示方案');
   // 补全训练目标（用户回答）后：fitness 的 required_missing 减少，仍允许候选或正式方案
-  const intakeM=await import('../server/intake.mjs');
   const goalField=intakeM.intakeOverview(user,'fitness',db()).fields.find(f=>f.key==='fitness.goal');
   intakeM.updateIntake(user,'website',{request_id:randomUUID(),domain:'fitness',field_key:'fitness.goal',token:goalField.token,operation:'answer',answer:'增肌'},++t);
   assert.ok(!life.context(db(),user,day).intake.fitness.required_missing.includes('训练目标'),'回答后训练目标从关键缺失移除');

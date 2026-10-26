@@ -25,7 +25,7 @@ test('stage6: execution feedback closes the loop - done never carried over; part
   let t=now,workItem=null;
   for(let i=0;i<4;i++){
    const j=q.claimJob(user,'k0',{},++t).job;assert.ok(j,'第 '+(i+1)+' 个任务可领取');
-   const out=j.action==='analysis.fitness'?{summary:'训练',sessions:[{id:fitItem,title:'力量训练',minutes:30,reason:'g'}],missing:[]}:j.action==='analysis.diet'?{summary:'饮食',meals:[{id:randomUUID(),title:'早餐',reason:'g'}],missing:[]}:j.action==='analysis.work'?{summary:'工作',recommendations:['推进项目'],missing:[]}:{summary:'计划',items:[{id:randomUUID(),title:'推进项目',minutes:30,reason:'w',domain:'work'}],buffer_minutes:10,deferred:[],missing:[]};
+   const out=j.action==='analysis.fitness'?{summary:'训练',sessions:[{id:fitItem,title:'力量训练',minutes:30,reason:'g'}],missing:[]}:j.action==='analysis.diet'?{summary:'饮食',meals:[{id:randomUUID(),title:'早餐',reason:'g'}],missing:[]}:j.action==='analysis.work'?{summary:'工作',items:[{id:randomUUID(),title:'推进项目',reason:'w'}],missing:[]}:{summary:'计划',items:[{id:randomUUID(),title:'推进项目',minutes:30,reason:'w',domain:'work'}],buffer_minutes:10,deferred:[],missing:[]};
    q.updateJob(user,'k0',j.job_id,'result',{lease_token:j.lease_token,status:'succeeded',output:out},++t);
   }
   confirmPlan(user,'fitness',1,'website');
@@ -34,7 +34,7 @@ test('stage6: execution feedback closes the loop - done never carried over; part
   let d2=lifeMod.overview(user,next).day;d2=lifeMod.updateDay(user,{day:next,version:d2.version,operation:'input',data:{available_minutes:90,energy:3,fixed:'',note:''}},++t);
   lifeMod.generate(user,{day:next,kind:'plan',version:d2.version},++t);
   for(let i=0;i<3;i++){const j=q.claimJob(user,'k0',{},++t).job;assert.ok(j);if(j.action==='daily.plan'){if(j.payload?.confirmed_plans?.fitness)workItem=null;q.updateJob(user,'k0',j.job_id,'result',{lease_token:j.lease_token,status:'succeeded',output:{summary:'次日计划',items:[{id:randomUUID(),title:'力量训练',minutes:30,reason:'沿用',domain:'fitness',source_id:fitItem},{id:randomUUID(),title:'推进项目',minutes:30,reason:'w',domain:'work'},{id:randomUUID(),title:'早餐',minutes:10,reason:'d',domain:'diet'}],buffer_minutes:5,deferred:[],missing:[]}},++t);continue}
-   const out=j.action==='analysis.work'?{summary:'工作',recommendations:['推进项目'],missing:[]}:{summary:'饮食',meals:[{id:randomUUID(),title:'早餐',reason:'g'}],missing:[]};
+   const out=j.action==='analysis.work'?{summary:'工作',items:[{id:randomUUID(),title:'推进项目',reason:'w'}],missing:[]}:{summary:'饮食',meals:[{id:randomUUID(),title:'早餐',reason:'g'}],missing:[]};
    q.updateJob(user,'k0',j.job_id,'result',{lease_token:j.lease_token,status:'succeeded',output:out},++t)}
   const planItems=JSON.parse(db().prepare('SELECT plan FROM daily_days WHERE user_id=? AND day=?').get(user,next).plan).items;
   const fitPlanItem=planItems.find(x=>x.domain==='fitness'),workPlanItem=planItems.find(x=>x.domain==='work'),dietPlanItem=planItems.find(x=>x.domain==='diet');

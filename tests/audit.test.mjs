@@ -22,7 +22,7 @@ test('audit: completed and stale items are blocked from plans; slots are validat
   let d=life.overview(user,day).day;
   d=life.updateDay(user,{day,version:d.version,operation:'input',data:{available_minutes:120,energy:3,fixed:'',note:''}},now);
   const flow=life.generate(user,{day,kind:'plan',version:d.version},now);
-  const outFor=a=>a==='analysis.fitness'?{summary:'F',sessions:[{id:randomUUID(),title:'Run',minutes:30,reason:'g'}],missing:['训练目标未确认']}:a==='analysis.diet'?{summary:'D',meals:[{id:randomUUID(),title:'Breakfast',reason:'g'}],missing:['饮食目标未确认']}:{summary:'A',recommendations:[],missing:[]};
+  const outFor=a=>a==='analysis.fitness'?{summary:'F',sessions:[{id:randomUUID(),title:'Run',minutes:30,reason:'g'}],missing:['训练目标未确认']}:a==='analysis.diet'?{summary:'D',meals:[{id:randomUUID(),title:'Breakfast',reason:'g'}],missing:['饮食目标未确认']}:{summary:'A',items:[],missing:[]};
   for(let i=0;i<3;i++){
    const j=q.claimJob(user,'k0',{},now+i+1).job;assert.ok(j);
    q.updateJob(user,'k0',j.job_id,'result',{lease_token:j.lease_token,status:'succeeded',output:outFor(j.action)},now+i+1);
@@ -40,10 +40,11 @@ test('audit: completed and stale items are blocked from plans; slots are validat
   const titleOk={summary:'p',items:[{id:randomUUID(),title:'服务器域名注册',minutes:30,reason:'周期事项，标题相同不代表已完成',task_id:null}],buffer_minutes:15,deferred:[],missing:[]};
   q.updateJob(user,'k0',planJob.job_id,'result',{lease_token:planJob.lease_token,status:'succeeded',output:titleOk},now+7);
   // Stale-but-unfinished items are a soft check: may be scheduled with a reason.
+  // 同输入重复生成：分析任务被复用（不重复派发），只有新的统筹任务需要领取提交。
   const newFlow=v=>life.generate(user,{day,kind:'plan',version:life.overview(user,day).day.version},v);
-  const runAnalysis=v=>{for(let i=0;i<3;i++){const j=q.claimJob(user,'k0',{},v+i).job;q.updateJob(user,'k0',j.job_id,'result',{lease_token:j.lease_token,status:'succeeded',output:outFor(j.action)},v+i)}};
-  newFlow(now+8);runAnalysis(now+9);
-  const softJob=q.claimJob(user,'k0',{},now+13).job;
+  const runAnalysis=v=>{let i=0,j;while((j=q.claimJob(user,'k0',{},v+i).job)&&j.action!=='daily.plan'){q.updateJob(user,'k0',j.job_id,'result',{lease_token:j.lease_token,status:'succeeded',output:outFor(j.action)},v+i);i++}return j};
+  newFlow(now+8);const softJob=runAnalysis(now+9);
+  assert.equal(softJob.action,'daily.plan','重复生成只派发统筹，分析任务复用同输入结果');
   const softPlan={summary:'p',items:[{id:randomUUID(),title:'旧年度目标',minutes:30,reason:'仍在推进，已说明延续理由',task_id:null},{id:randomUUID(),title:'旧待办',minutes:30,reason:'继续完成',task_id:null},{id:randomUUID(),title:'进行中待办',minutes:30,reason:'继续',task_id:activeTaskId}],buffer_minutes:0,deferred:[],missing:[]};
   q.updateJob(user,'k0',softJob.job_id,'result',{lease_token:softJob.lease_token,status:'succeeded',output:softPlan},now+14);
  }finally{closeDb();rmSync(dir,{recursive:true,force:true})}

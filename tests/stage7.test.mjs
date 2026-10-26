@@ -28,7 +28,7 @@ async function runRound(user,key,day,{budget,planItems,expectPlan=true}){
   if(j.action==='daily.plan'){plan=j;break}
   if(j.action==='daily.review'){q.updateJob(user,key,j.job_id,'result',{lease_token:j.lease_token,status:'succeeded',output:{summary:'复盘',observations:['正常'],adjustments:[],missing:[]}},++now);continue}
   // 领到即提交，释放执行额度（max_parallel）
-  const out=j.action==='analysis.work'?{summary:'工作',recommendations:['推进项目'],missing:[]}:j.action==='analysis.fitness'?{summary:'训练',sessions:[{id:fitId(day),title:'力量训练',minutes:30,reason:'g'}],missing:[]}:{summary:'饮食',meals:[{id:mealId(day),title:'早餐',reason:'g'}],missing:[]};
+  const out=j.action==='analysis.work'?{summary:'工作',items:[{id:randomUUID(),title:'推进项目',reason:'w'}],missing:[]}:j.action==='analysis.fitness'?{summary:'训练',sessions:[{id:fitId(day),title:'力量训练',minutes:30,reason:'g'}],missing:[]}:{summary:'饮食',meals:[{id:mealId(day),title:'早餐',reason:'g'}],missing:[]};
   q.updateJob(user,key,j.job_id,'result',{lease_token:j.lease_token,status:'succeeded',output:out},++now);
   analysis.push(j);
  }
@@ -96,7 +96,7 @@ test('stage7-A: full business loop with simulated dates - final acceptance scena
   assert.ok(jobs5.some(x=>x.action==='daily.plan'),'次日计划任务已生成');
   // 逐个领取并提交（领到即提交释放执行额度），直到没有可领任务
   for(let i=0;i<8;i++){const cl=q.claimJob(user,key,{},simTick+2000).job;if(!cl)break;
-   const out=cl.action==='daily.review'?{summary:'复盘',observations:['正常'],adjustments:[],missing:[]}:cl.action==='daily.plan'?{summary:'次日计划',items:[{id:randomUUID(),title:'力量训练',minutes:30,reason:'沿用',domain:'fitness',source_id:fitId(day4)}],buffer_minutes:5,deferred:[],missing:['可用时间未知']}:cl.action==='analysis.work'?{summary:'工作',recommendations:['推进项目'],missing:[]}:cl.action==='analysis.fitness'?{summary:'训练',sessions:[{id:fitId(day4),title:'力量训练',minutes:30,reason:'g'}],missing:[]}:{summary:'饮食',meals:[{id:mealId(day4),title:'早餐',reason:'g'}],missing:[]};
+   const out=cl.action==='daily.review'?{summary:'复盘',observations:['正常'],adjustments:[],missing:[]}:cl.action==='daily.plan'?{summary:'次日计划',items:[{id:randomUUID(),title:'力量训练',minutes:30,reason:'沿用',domain:'fitness',source_id:fitId(day4)}],buffer_minutes:5,deferred:[],missing:['可用时间未知']}:cl.action==='analysis.work'?{summary:'工作',items:[{id:randomUUID(),title:'推进项目',reason:'w'}],missing:[]}:cl.action==='analysis.fitness'?{summary:'训练',sessions:[{id:fitId(day4),title:'力量训练',minutes:30,reason:'g'}],missing:[]}:{summary:'饮食',meals:[{id:mealId(day4),title:'早餐',reason:'g'}],missing:[]};
    q.updateJob(user,key,cl.job_id,'result',{lease_token:cl.lease_token,status:'succeeded',output:out},simTick+3000)}
   const day5='2026-10-29';
   d=life.overview(user,day5).day;life.updateDay(user,{day:day5,version:d.version,operation:'confirm',data:{}},++now);
@@ -128,11 +128,18 @@ test('stage7-B: restart continues, failure recover, version conflict, backup res
   assert.ok(restarted&&['running','queued'].includes(restarted.status),'重启后任务状态保留');
   const rec=q.activeJobs(user,key,++now);
   if(first.status==='running')assert.ok(rec.jobs.some(x=>x.job_id===first.job_id),'进行中任务可恢复租约');
-  // 失败恢复：把 running 分析任务标记失败，重新生成 → 新版本任务可完成
+  // 失败恢复：把 running 分析任务标记失败，重新生成 → 失败域的新版本任务可完成
+  // （同输入的其他域分析被复用为依赖；领取顺序与失败域不预设，精确按 job_id 领取失败域新任务）
+  const failedDomain=first.action.slice('analysis.'.length);
   q.updateJob(user,key,first.job_id,'result',{lease_token:first.lease_token,status:'failed',output:{error:'模拟失败'}},++now);
   d=life.overview(user,day).day;life.generate(user,{day,kind:'plan',version:d.version},++now);
   let recovered=null;
-  for(let i=0;i<4;i++){const j=q.claimJob(user,key,{},++now).job;if(j&&j.action==='analysis.work'){recovered=j;q.updateJob(user,key,j.job_id,'result',{lease_token:j.lease_token,status:'succeeded',output:{summary:'工作',recommendations:['推进项目'],missing:[]}},++now);break}}
+  const queuedNow=q.listJobs(user,++now).jobs.filter(x=>x.status==='queued');
+  const target=queuedNow.find(x=>x.action==='analysis.'+failedDomain&&x.day===day);
+  assert.ok(target,'失败域在重新生成后获得新分析任务');
+  const rj=q.claimJob(user,key,{job_id:target.job_id},++now).job;assert.ok(rj,'可领取失败域新任务');
+  const out=failedDomain==='fitness'?{summary:'训练',sessions:[{id:randomUUID(),title:'力量训练',minutes:30,reason:'g'}],missing:['训练目标未确认，此为候选']}:failedDomain==='diet'?{summary:'饮食',meals:[{id:randomUUID(),title:'早餐',reason:'g'}],missing:['饮食目标未确认，此为候选']}:{summary:'工作',items:[{id:randomUUID(),title:'推进项目',reason:'w'}],missing:[]};
+  q.updateJob(user,key,rj.job_id,'result',{lease_token:rj.lease_token,status:'succeeded',output:out},++now);recovered=rj;
   assert.ok(recovered,'失败后可重新生成并领取任务完成');
   // 版本冲突
   const stale=life.overview(user,day).day.version-1;
@@ -180,7 +187,7 @@ test('stage7-C: multiple executors can complete the flow independently',async()=
   for(let i=0;i<8&&done.length<4;i++){
    const key=i%2===0?keyA:keyB;
    const j=q.claimJob(user,key,{},++now).job;if(!j)continue;
-   const out=j.action==='analysis.work'?{summary:'工作',recommendations:['推进项目'],missing:[]}:j.action==='analysis.fitness'?{summary:'训练',sessions:[{id:fitId(day),title:'力量训练',minutes:30,reason:'g'}],missing:[]}:j.action==='analysis.diet'?{summary:'饮食',meals:[{id:mealId(day),title:'早餐',reason:'g'}],missing:[]}:{summary:'计划',items:[{id:randomUUID(),title:'推进项目',minutes:60,reason:'w',domain:'work'}],buffer_minutes:10,deferred:[],missing:[]};
+   const out=j.action==='analysis.work'?{summary:'工作',items:[{id:randomUUID(),title:'推进项目',reason:'w'}],missing:[]}:j.action==='analysis.fitness'?{summary:'训练',sessions:[{id:fitId(day),title:'力量训练',minutes:30,reason:'g'}],missing:[]}:j.action==='analysis.diet'?{summary:'饮食',meals:[{id:mealId(day),title:'早餐',reason:'g'}],missing:[]}:{summary:'计划',items:[{id:randomUUID(),title:'推进项目',minutes:60,reason:'w',domain:'work'}],buffer_minutes:10,deferred:[],missing:[]};
    q.updateJob(user,key,j.job_id,'result',{lease_token:j.lease_token,status:'succeeded',output:out},++now);
    done.push({action:j.action,key});
   }

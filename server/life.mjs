@@ -3,8 +3,8 @@ import {z} from 'zod';
 import {db,transaction} from './database.mjs';
 import {HttpError} from './auth.mjs';
 import {auditContext} from './audit.mjs';
-import {definitions as intakeDefs} from './intake.mjs';
-import {currentPlan} from './domain-plans.mjs';
+import {intakeStatus} from './intake.mjs';
+import {currentPlan,pendingAdjustments} from './domain-plans.mjs';
 import {assessDomain,logDomainState} from './domain-state.mjs';
 export const fail=(s,m)=>{throw new HttpError(s,m)};
 export const canon=v=>JSON.stringify(v,(_,x)=>x&&typeof x==='object'&&!Array.isArray(x)?Object.fromEntries(Object.keys(x).sort().map(k=>[k,x[k]])):x);
@@ -18,7 +18,9 @@ export const nextDay=day=>shiftDay(day,1);
 const inputSchema=z.object({available_minutes:z.number().int().min(0).max(1440).nullable().default(null),energy:z.number().int().min(1).max(5).nullable().default(null),fixed:z.string().max(4000).default(''),note:z.string().max(4000).default('')}).strict();
 const itemSchema=z.object({id:z.string().uuid(),title:text,minutes:z.number().int().min(1).max(1440),reason:text,task_id:z.string().uuid().nullable().default(null),domain:z.enum(['work','fitness','diet']).optional(),source_id:z.string().uuid().nullable().optional()}).strict();
 export const planSchema=z.object({summary:text,items:z.array(itemSchema).max(40),buffer_minutes:z.number().int().min(0).max(1440),deferred:z.array(text).max(40),missing:z.array(text).max(20)}).strict();
-export const analysisSchema=z.object({summary:text,recommendations:z.array(text).max(30),missing:z.array(text).max(20)}).strict();
+const analysisItem=z.object({id:z.string().uuid(),title:text,reason:text}).strict();
+// 批次 A 第二步：工作方案采用有稳定 ID 的结构化事项（可被统筹 source_id 引用），不再用字符串建议承担来源。
+export const analysisSchema=z.object({summary:text,items:z.array(analysisItem).max(30),missing:z.array(text).max(20)}).strict();
 const fitnessItem=z.object({id:z.string().uuid(),title:text,minutes:z.number().int().min(5).max(300),reason:text}).strict();
 export const fitnessPlanSchema=z.object({summary:text,sessions:z.array(fitnessItem).max(20),missing:z.array(text).max(20)}).strict();
 const dietItem=z.object({id:z.string().uuid(),title:text,reason:text}).strict();
@@ -26,29 +28,16 @@ export const dietPlanSchema=z.object({summary:text,meals:z.array(dietItem).max(3
 export const reviewSchema=z.object({summary:text,observations:z.array(text).max(30),adjustments:z.array(text).max(30),missing:z.array(text).max(20)}).strict();
 export const publishSchema=z.object({external_effect:z.literal(true),receipts:z.array(z.object({item_id:z.string(),external_id:text,url:z.string().url().optional()}).strict()).min(1).max(41)}).strict();
 const autoAdjustSchema=z.object({enabled:z.boolean(),overrun_factor:z.number().min(1).max(5),energy_drop_threshold:z.number().int().min(1).max(5),skip_carryover:z.boolean()}).strict();
-const settingsSchema=z.object({enabled:z.boolean(),plan_time:z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),review_time:z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),feishu:z.boolean(),auto_adjust:autoAdjustSchema}).strict();
-const settingsDefaults={enabled:false,plan_time:'07:00',review_time:'21:00',feishu:false,auto_adjust:{enabled:true,overrun_factor:2,energy_drop_threshold:2,skip_carryover:true}};
-export function settings(user,d=db()){const b=JSON.parse(d.prepare('SELECT body FROM life_settings WHERE user_id=?').get(user)?.body||'{}');return {...settingsDefaults,...b,auto_adjust:{...settingsDefaults.auto_adjust,...(b.auto_adjust||{})}}}
-export function saveSettings(user,b){const {actor='website',...rest}=b;const value=settingsSchema.parse({...rest,auto_adjust:{...settingsDefaults.auto_adjust,...(rest.auto_adjust||{})}});db().prepare('INSERT INTO life_settings VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET body=excluded.body').run(user,JSON.stringify(value));db().prepare('INSERT INTO agent_audit(user_id,event,job_id,created) VALUES(?,?,?,?)').run(user,'settings.update:'+actor,null,Date.now());return value}
+const domainReviewSchema=z.object({work:z.number().int().min(1).max(90),fitness:z.number().int().min(1).max(90),diet:z.number().int().min(1).max(90)}).strict();
+const REVIEW_DEFAULTS={work:7,fitness:7,diet:7};
+const settingsSchema=z.object({enabled:z.boolean(),plan_time:z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),review_time:z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),feishu:z.boolean(),domain_review_days:domainReviewSchema.default(REVIEW_DEFAULTS),auto_adjust:autoAdjustSchema}).strict();
+const settingsDefaults={enabled:false,plan_time:'07:00',review_time:'21:00',feishu:false,domain_review_days:{...REVIEW_DEFAULTS},auto_adjust:{enabled:true,overrun_factor:2,energy_drop_threshold:2,skip_carryover:true}};
+export function settings(user,d=db()){const b=JSON.parse(d.prepare('SELECT body FROM life_settings WHERE user_id=?').get(user)?.body||'{}');return {...settingsDefaults,...b,domain_review_days:{...REVIEW_DEFAULTS,...(b.domain_review_days||{})},auto_adjust:{...settingsDefaults.auto_adjust,...(b.auto_adjust||{})}}}
+export function saveSettings(user,b){const {actor='website',...rest}=b;const value=settingsSchema.parse({...rest,domain_review_days:{...REVIEW_DEFAULTS,...(rest.domain_review_days||{})},auto_adjust:{...settingsDefaults.auto_adjust,...(rest.auto_adjust||{})}});db().prepare('INSERT INTO life_settings VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET body=excluded.body').run(user,JSON.stringify(value));db().prepare('INSERT INTO agent_audit(user_id,event,job_id,created) VALUES(?,?,?,?)').run(user,'settings.update:'+actor,null,Date.now());return value}
 export function ensureDay(d,user,day,now){dateSchema.parse(day);d.prepare("INSERT OR IGNORE INTO daily_days(user_id,day,input,updated) VALUES(?,?,?,?)").run(user,day,JSON.stringify(inputSchema.parse({})),now);return d.prepare('SELECT * FROM daily_days WHERE user_id=? AND day=?').get(user,day)}
 export function unpackDay(r){return {...r,input:JSON.parse(r.input),plan:r.plan?JSON.parse(r.plan):null,feedback:JSON.parse(r.feedback),review:r.review?JSON.parse(r.review):null,fitness:r.fitness?JSON.parse(r.fitness):null,diet:r.diet?JSON.parse(r.diet):null,confirmed:!!r.confirmed}}
 export function records(d,user){return d.prepare("SELECT r.id,r.kind,r.payload,r.version,m.body FROM records r LEFT JOIN record_metadata m ON m.record_id=r.id WHERE r.user_id=? AND r.deleted=0 AND r.kind IN ('goal','task','sleep','exercise','intake','environment','phone_usage','mood','profile') ORDER BY r.id").all(user).map(r=>({id:r.id,kind:r.kind,version:r.version,data:JSON.parse(r.payload),metadata:r.body?JSON.parse(r.body):{}}))}
 export const fingerprint=r=>createHash('sha256').update(canon(r)).digest('hex');
-// Shared-profile collection status per domain (server side, mirrors intake fields without importing intake.mjs at call time).
-function intakeStatus(d,user){
- const rows=d.prepare('SELECT field_key,deferred,record_id,record_version FROM intake_fields WHERE user_id=?').all(user);
- const byKey=new Map(rows.map(r=>[r.field_key,r]));
- const statusFor=def=>{const link=byKey.get(def.key);if(link?.deferred)return 'deferred';if(!link?.record_id)return 'missing';
-  const rec=d.prepare('SELECT version,deleted,payload FROM records WHERE id=? AND user_id=?').get(link.record_id,user);
-  if(!rec||rec.deleted||rec.version!==link.record_version)return 'needs_review';
-  return JSON.parse(rec.payload).status==='known'?'known':'needs_review';};
- const out={};
- for(const domain of ['work','fitness','diet']){
-  const fields=intakeDefs.filter(x=>x.domains.includes(domain)).map(x=>({key:x.key,label:x.label,question:x.question,required:x.required,status:statusFor(x)}));
-  out[domain]={fields,required_missing:fields.filter(f=>f.required&&f.status!=='known').map(f=>f.label),needs_review:fields.filter(f=>f.status==='needs_review').map(f=>f.label),known:fields.filter(f=>f.status==='known').map(f=>f.label)};
- }
- return out;
-}
 export function context(d,user,day){const current=unpackDay(ensureDay(d,user,day,Date.now()));const since=shiftDay(day,-7);const recent=d.prepare('SELECT * FROM daily_days WHERE user_id=? AND day>=? AND day<? ORDER BY day DESC LIMIT 30').all(user,since,day).map(unpackDay);const all=records(d,user);const s=settings(user,d);const audit=auditContext(d,user,day,{all,recent,adjust:s.auto_adjust});return {day:{...current,audit:audit.issues,anomalies:audit.anomalies},recent,records:all,records_version:fingerprint(all),guards:audit.guards,carryover:audit.carryover,intake:intakeStatus(d,user)}}
  export function enqueue(d,user,{idem,action,payload={},dependencies=[],day=null,version=null,target='*'},now){
  const old=d.prepare('SELECT id,status FROM agent_jobs WHERE user_id=? AND idem=?').get(user,idem);
@@ -71,28 +60,50 @@ export function generate(user,b,now=Date.now()){
   return generateIn(d,user,day,kind,next,now);
  });
 }
+// 批次 A 第一步：查找该日该域"同输入"的分析任务（queued/running/succeeded）用于复用。
+// 去重依据=任务类型+目标日期+输入指纹（records_version），不做按天粗粒度去重。
+function sameInputAnalysis(d,user,day,domain,rv){
+ const rows=d.prepare("SELECT * FROM agent_jobs WHERE user_id=? AND day=? AND status IN ('queued','running','succeeded')").all(user,day);
+ const matched=rows.filter(r=>{const req=JSON.parse(r.request);return req.action==='analysis.'+domain&&req.payload?.context?.records_version===rv}).sort((a,b)=>a.created-b.created);
+ return matched.pop()||null;
+}
 function generateIn(d,user,day,kind,version,now){
  const r=ensureDay(d,user,day,now);if(r.version!==version)fail(409,'页面已变化，请刷新后重试');
  if(kind==='plan'&&r.confirmed)fail(409,'请先撤回当前计划，再重新生成');
- const ctx=context(d,user,day),prefix=`${day}:${version}:${kind}`;
+ const ctx=context(d,user,day),prefix=`${day}:${version}:${kind}`,rv=ctx.records_version,nowIso=new Date(now).toISOString();
  const common={context:ctx,instruction:'以共享数据为依据；缺失信息明确列出，不虚构完成情况。不诊断疾病，不执行外部操作。'};
- if(kind==='review')return {job_id:enqueue(d,user,{idem:prefix,action:'daily.review',day,version,payload:common},now)};
- // 阶段 3/4：逐域评估状态——正常/关注沿用已确认方案（不派分析）；资料不足/无有效方案重新分析；同一天已有未完成同类分析时不重复派发；每次生成写入触发审计。
+ if(kind==='review'){
+  d.prepare("SELECT id FROM agent_jobs WHERE user_id=? AND day=? AND status IN ('queued','running') AND idem LIKE ?").all(user,day,`${day}:%:review`).forEach(x=>d.prepare("UPDATE agent_jobs SET status='cancelled',updated=? WHERE id=?").run(now,x.id));
+  return {job_id:enqueue(d,user,{idem:prefix,action:'daily.review',day,version,payload:common},now)};
+ }
+ // 阶段 3/4：逐域评估状态——正常/关注沿用已确认方案（不派分析）；资料不足/无有效方案重新分析。
+ // 批次 A：同输入分析任务（未完成或已完成）作为本次统筹的前置依赖复用，不重复派发；输入已变化时先失效旧任务再创建新分析。
  const confirmed={},states={};
  for(const domain of ['work','fitness','diet']){
   const st=assessDomain(d,user,domain,day,ctx,new Date(now));
-  const dup=d.prepare("SELECT request,day FROM agent_jobs WHERE user_id=? AND status IN ('queued','running')").all(user).some(x=>{const rr=JSON.parse(x.request);return rr.action==='analysis.'+domain&&x.day===day});
-  if(dup){st.reasons.push('当天已有未完成的同类分析任务，不重复派发');st.decision='reuse'}
-  logDomainState(d,user,day,domain,st,new Date(now).toISOString());
+  logDomainState(d,user,day,domain,st,nowIso);
   states[domain]=st;
-  if(st.decision==='reuse'){const cur=currentPlan(d,user,domain);if(cur)confirmed[domain]=cur}
+  if(st.decision==='reuse'){const cur=currentPlan(d,user,domain,new Date(now));if(cur)confirmed[domain]=cur}
  }
- const analyze=domain=>states[domain].decision==='analyze';
- const work=analyze('work')?enqueue(d,user,{idem:prefix+':work',action:'analysis.work',day,version,payload:{...common,role:'目标与工作分析：权衡目标、截止时间、耗时与优先级，提出可执行建议。工作关键资料（目标/现状）未确认时列入 missing，不编造完成情况。'}},now):null;
- const fitness=analyze('fitness')?enqueue(d,user,{idem:prefix+':fitness',action:'analysis.fitness',day,version,payload:{...common,role:'健身方案：结合训练目标、现状与运动记录给出次日可行的训练安排（含时长），不诊断伤病。若训练目标、现状或限制等关键资料尚未确认（见 context.intake.fitness.required_missing / needs_review），在 missing 中列出并输出“暂无法制定完整方案”的候选，不编造训练内容。'}},now):null;
- const diet=analyze('diet')?enqueue(d,user,{idem:prefix+':diet',action:'analysis.diet',day,version,payload:{...common,role:'饮食方案：结合目标、习惯与预算给出次日可行的饮食安排，不设定医学结论。若饮食目标、习惯或限制等关键资料尚未确认（见 context.intake.diet.required_missing / needs_review），在 missing 中列出并输出“暂无法制定完整方案”的候选，不编造饮食安排。'}},now):null;
- const deps=[work,fitness,diet].filter(Boolean);
- return {job_id:enqueue(d,user,{idem:prefix,action:'daily.plan',day,version,dependencies:deps,payload:{...common,confirmed_plans:confirmed,domain_states:states,role:'统筹：综合已确认方案（confirmed_plans，直接引用其事项 id 作 source_id）与本次前置分析结果，形成唯一无冲突的计划草案。domain_states 说明各领域状态与沿用/分析原因。任务使用 UUID；每项须标明 domain（work/fitness/diet）和来源 source_id（引用被选中的方案事项 id），未选中的专业事项放入 deferred 并说明。时间预算由服务器校验：总耗时加机动不得超过已知可用时间；固定安排（context.day.input.fixed）占用的时间要计入预算，无法从文本解析时在 missing 中说明，不硬排精确时间槽。重要临时事项（context.records 中新增的 task/note 类记录）与昨日结转（carryover）优先纳入今日计划，避免无限拖延；核对清单（audit）中已完成或过期的记录仅作提示，周期事项照常安排。'}},now)};
+ const deps=[];
+ for(const domain of ['work','fitness','diet']){
+  if(states[domain].decision!=='analyze')continue;
+  const ex=sameInputAnalysis(d,user,day,domain,rv);
+  const pending=pendingAdjustments(d,user,domain,nowIso);
+  if(ex&&pending.length===0){
+   states[domain].reasons.push('同输入（同一记录版本）已有'+(ex.status==='succeeded'?'完成':'进行中')+'的分析任务，直接作为本次统筹的前置依赖，不重复派发');
+   logDomainState(d,user,day,domain,states[domain],nowIso);
+   deps.push(ex.id);
+   continue;
+  }
+  if(pending.length)states[domain].reasons.push('领域有 '+pending.length+' 项待处理调整请求，触发重新分析');
+  const role={work:'目标与工作分析：权衡目标、截止时间、耗时与优先级，提出可执行建议；输出结构化事项（items，每项含 id/title/reason）供统筹引用。工作关键资料（目标/现状）未确认时列入 missing，不编造完成情况。请说明如何处理相关调整请求（context.adjustments 或 payload.adjustments）。',fitness:'健身方案：结合训练目标、现状与运动记录给出次日可行的训练安排（含时长），不诊断伤病。若训练目标、现状或限制等关键资料尚未确认（见 context.intake.fitness.required_missing / needs_review），在 missing 中列出并输出“暂无法制定完整方案”的候选，不编造训练内容。请说明如何处理相关调整请求。',diet:'饮食方案：结合目标、习惯与预算给出次日可行的饮食安排，不设定医学结论。若饮食目标、习惯或限制等关键资料尚未确认（见 context.intake.diet.required_missing / needs_review），在 missing 中列出并输出“暂无法制定完整方案”的候选，不编造饮食安排。请说明如何处理相关调整请求。'}[domain];
+  deps.push(enqueue(d,user,{idem:prefix+':'+domain,action:'analysis.'+domain,day,version,payload:{...common,role,adjustments:pendingAdjustments(d,user,domain,nowIso)}},now));
+ }
+ // 统一失效该日旧版统筹与旧分析（queued/running；被复用的同输入任务保留）——旧执行者回传时会被版本校验拒绝，不会回写。
+ const keep=new Set(deps);
+ d.prepare("SELECT id,request FROM agent_jobs WHERE user_id=? AND day=? AND status IN ('queued','running')").all(user,day).forEach(x=>{const req=JSON.parse(x.request);if((req.action==='daily.plan'||req.action==='daily.review'||req.action.startsWith('analysis.'))&&!keep.has(x.id))d.prepare("UPDATE agent_jobs SET status='cancelled',updated=? WHERE id=?").run(now,x.id)});
+ return {job_id:enqueue(d,user,{idem:prefix,action:'daily.plan',day,version,dependencies:deps,payload:{...common,confirmed_plans:confirmed,domain_states:states,role:'统筹：综合已确认方案（confirmed_plans，直接引用其事项 id 作 source_id）与本次前置分析结果，形成唯一无冲突的计划草案。domain_states 说明各领域状态与沿用/分析原因；各领域调整请求由对应分析任务处理。任务使用 UUID；每项须标明 domain（work/fitness/diet）和来源 source_id（引用被选中的方案事项 id），未选中的专业事项放入 deferred 并说明。某领域关键资料缺失（context.intake.<domain>.required_missing 非空）时，该领域安排只能作为候选放入 deferred，不得进入正式执行清单。时间预算由服务器校验：总耗时加机动不得超过已知可用时间；固定安排（context.day.input.fixed）占用的时间要计入预算，无法从文本解析时在 missing 中说明，不硬排精确时间槽。重要临时事项（context.records 中新增的 task/note 类记录）与昨日结转（carryover）优先纳入今日计划，避免无限拖延；核对清单（audit）中已完成或过期的记录仅作提示，周期事项照常安排。'}},now)};
 }
 export function updateDay(user,b,now=Date.now()){
  const v=z.object({day:dateSchema,version:z.number().int(),operation:z.enum(['input','feedback','confirm','reopen']),data:z.unknown().optional(),actor:z.string().max(80).optional()}).strict().parse(b);
@@ -114,6 +125,10 @@ export function updateDay(user,b,now=Date.now()){
  if(v.operation==='confirm'){
   if(!r.plan)fail(409,'还没有计划草案');if(r.confirmed)return unpackDay(r);
   const plan=JSON.parse(r.plan);
+  // 批次 A 第二步：关键资料缺失的领域事项只能作为候选，不能进入正式执行清单并确认发布。
+  const status=intakeStatus(d,user);
+  const blocked=plan.items.filter(i=>i.domain&&(status[i.domain]?.required_missing||[]).length>0);
+  if(blocked.length)fail(409,'领域「'+[...new Set(blocked.map(i=>i.domain))].join('、')+'」关键资料尚未确认（'+[...new Set(blocked.flatMap(i=>status[i.domain].required_missing))].join('、')+'），相关安排只能作为候选，不能确认发布；请先补齐资料或重新生成计划');
   // 只从同一份确认快照（plan）派生三域展示与发布：统筹未选中的专业事项不发布、不展示。
   const byDomain=domain=>plan.items.filter(x=>x.domain===domain);
   const fitnessItems=byDomain('fitness'),dietItems=byDomain('diet');

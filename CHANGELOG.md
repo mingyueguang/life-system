@@ -1,3 +1,13 @@
+# 1.6.0 · 2026-10-26（批次 A：任务依赖 / 资料门槛 / 方案生命周期）
+
+- **任务生成与依赖修复（第一步）**：生成前按输入指纹（records_version）查找该日同输入的分析任务——进行中或已完成的分析直接作为本次统筹的前置依赖复用（不重复派发）；输入已变化时先失效旧版统筹与分析任务（旧执行者回传被版本校验拒绝，不会回写）。去掉按天粗粒度去重导致的"新统筹失去前置依赖"问题；"正在分析/已有有效方案/资料不足"由领域状态规则独立判定。
+- **资料门槛与方案来源（第二步）**：统一资料准备状态计算入口（intake.intakeStatus，替代 life.mjs 内重复实现，规划/领域状态/确认/展示同源）；关键资料缺失（required_missing）的领域事项只能作为候选放入 deferred，服务器校验禁止其进入正式执行清单（daily.plan 回传 400、确认 409 双保险）；工作方案输出改为有稳定 ID 的结构化事项（items），可被统筹 source_id 引用，不再用字符串建议承担来源。
+- **方案生命周期与调整请求（第三步）**：调整请求持久化（plan_adjustments：原因/提出者/时间/关联版本/处理状态），下一轮分析携带未处理请求并说明处理，成功后标记 handled；每域仅一个当前有效方案（确认时存在更新版本返回 409）；方案落库记录依据指纹 basis_hash，确认前资料已变化返回 409；需复核/过期方案确认=继续沿用并记录新有效期（按域复核周期）；复核周期可配置（settings.domain_review_days，默认 7 天/域）；currentPlan 等有效期判断改用可注入时钟。
+- 数据迁移 v10（增量、兼容）：domain_plans 加 basis_hash 列；新增 plan_adjustments 表与索引。既有数据无需回填（basis_hash 为 null 时跳过依据校验）。
+- 新接口：`GET /api/v1/plans/adjustments?domain=&status=`（调整请求查询，跨重启可读）。
+- 协议版本 1.6.0（package.json / package-lock / schema protocolVersion / health release / protocol.mjs / ai-guide.md 同步）；analysis.work 输出结构变更（items 替代 recommendations），契约成功示例与规则同步。
+- 测试：更新全部 work 输出结构用例，新增批次 A 专项测试（同输入复用/输入变化失效、资料不足域拦截、确认并发与依据校验、调整请求持久化与读取）。20/20 通过，typecheck 通过。
+
 # 1.5.0 · 2026-10-26
 
 - **单次授权即全权限（AI 对话为主线）**：已登记执行者持读写密钥即获得完整操作权限，不再按操作单独授权——确认/撤回计划（daily/update confirm|reopen）、修改系统设置（settings，含飞书开关）、确认领域方案（plans/confirm）、核实 AI 提取信息（records/review）、确认资料整理建议（intake accept_evidence）全部开放 AI 通道；原"仅网站会话/仅网站核对"的 403 拦截移除。

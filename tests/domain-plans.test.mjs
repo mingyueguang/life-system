@@ -5,7 +5,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {db,closeDb} from '../server/database.mjs';
-import {plans as plansApi,currentPlan,confirmPlan,adjustPlan} from '../server/domain-plans.mjs';
+import {plans as plansApi,currentPlan,confirmPlan,adjustPlan,adjustmentRequests} from '../server/domain-plans.mjs';
 test('stage3: domain plans persist with basis, validity, version and confirmation; confirmed plans are reused; key-fact edits only invalidate the affected domain',async()=>{
  const dir=mkdtempSync(join(tmpdir(),'life-plan3-'));process.env.DATABASE_PATH=join(dir,'p3.sqlite');
  const lifeMod=await import('../server/life.mjs');const q=await import('../server/agent-jobs.mjs');
@@ -15,10 +15,11 @@ test('stage3: domain plans persist with basis, validity, version and confirmatio
   db().prepare('INSERT INTO api_keys VALUES(?,?,?,?,?,?,?)').run('k0','h0',user,'AI','write','date',now+365*86400000);
   lifeMod.registerExecutor(user,'k0',{name:'AI',capabilities:['analysis'],max_parallel:1},now);
   lifeMod.saveSettings(user,{enabled:false,plan_time:'07:00',review_time:'21:00',feishu:false});
-  // 补齐 fitness 关键资料：缺资料时按阶段 4 规则不会沿用已确认方案，先补全使"确认→沿用"场景成立
+  // 补齐 fitness 与 work 关键资料：缺资料时按阶段 4 规则不会沿用已确认方案，先补全使"确认→沿用"场景成立；
+  // 批次 A 资料门槛要求缺资料的领域事项不能进入正式执行清单，因此 plan 中出现的 domain 需资料齐全。
   const intakeM3=await import('../server/intake.mjs');
   let _t0=now;
-  for(const key of ['fitness.goal','fitness.baseline','fitness.constraints','shared.time']){const f=intakeM3.intakeOverview(user,'fitness',db()).fields.find(x=>x.key===key);intakeM3.updateIntake(user,'website',{request_id:randomUUID(),domain:'fitness',field_key:key,token:f.token,operation:'answer',answer:key==='fitness.goal'?'增肌':key==='fitness.baseline'?'每周三次力量训练':key==='fitness.constraints'?'无运动限制':'晚上有空'},++_t0)}
+  for(const [dom,key,ans] of [['fitness','fitness.goal','增肌'],['fitness','fitness.baseline','每周三次力量训练'],['fitness','fitness.constraints','无运动限制'],['fitness','shared.time','晚上有空'],['work','work.goal','推进项目'],['work','work.current','开发中'],['work','shared.time','晚上有空']]){const f=intakeM3.intakeOverview(user,dom,db()).fields.find(x=>x.key===key);intakeM3.updateIntake(user,'website',{request_id:randomUUID(),domain:dom,field_key:key,token:f.token,operation:'answer',answer:ans},++_t0)}
   // 首次：三域分析成功 → 生成三条候选方案（有版本、复核时间、来源任务）
   let d=lifeMod.overview(user,day).day;d=lifeMod.updateDay(user,{day,version:d.version,operation:'input',data:{available_minutes:90,energy:3,fixed:'',note:''}},now);
   lifeMod.generate(user,{day,kind:'plan',version:d.version},now);
@@ -26,7 +27,7 @@ test('stage3: domain plans persist with basis, validity, version and confirmatio
   let t=now;
   for(let i=0;i<4;i++){
    const j=q.claimJob(user,'k0',{},++t).job;assert.ok(j,'首次流程第 '+(i+1)+' 个任务可领取');
-   const out=j.action==='analysis.fitness'?{summary:'训练',sessions:[{id:fitItem,title:'力量训练',minutes:30,reason:'g'}],missing:[]}:j.action==='analysis.diet'?{summary:'饮食',meals:[{id:mealItem,title:'早餐',reason:'g'}],missing:['饮食目标未确认']}:j.action==='analysis.work'?{summary:'工作',recommendations:['推进项目'],missing:[]}:{summary:'首次计划',items:[{id:randomUUID(),title:'推进项目',minutes:30,reason:'w',domain:'work'}],buffer_minutes:10,deferred:[],missing:[]};
+   const out=j.action==='analysis.fitness'?{summary:'训练',sessions:[{id:fitItem,title:'力量训练',minutes:30,reason:'g'}],missing:[]}:j.action==='analysis.diet'?{summary:'饮食',meals:[{id:mealItem,title:'早餐',reason:'g'}],missing:['饮食目标未确认']}:j.action==='analysis.work'?{summary:'工作',items:[{id:randomUUID(),title:'推进项目',reason:'w'}],missing:[]}:{summary:'首次计划',items:[{id:randomUUID(),title:'推进项目',minutes:30,reason:'w',domain:'work'}],buffer_minutes:10,deferred:[],missing:[]};
    q.updateJob(user,'k0',j.job_id,'result',{lease_token:j.lease_token,status:'succeeded',output:out},++t);
   }
   const all=plansApi(user,null,null,db());
@@ -47,7 +48,7 @@ test('stage3: domain plans persist with basis, validity, version and confirmatio
   for(let i=0;i<3;i++){
    const j=q.claimJob(user,'k0',{},++tt).job;assert.ok(j,'第 '+(i+1)+' 个任务可领取');claims.push(j);
    if(j.action!=='daily.plan'){
-    const out=j.action==='analysis.fitness'?{summary:'训练',sessions:[{id:randomUUID(),title:'x',minutes:30,reason:'g'}],missing:['训练目标未确认']}:j.action==='analysis.diet'?{summary:'饮食',meals:[{id:randomUUID(),title:'y',reason:'g'}],missing:['饮食目标未确认']}:{summary:'工作',recommendations:['推进'],missing:[]};
+    const out=j.action==='analysis.fitness'?{summary:'训练',sessions:[{id:randomUUID(),title:'x',minutes:30,reason:'g'}],missing:['训练目标未确认']}:j.action==='analysis.diet'?{summary:'饮食',meals:[{id:randomUUID(),title:'y',reason:'g'}],missing:['饮食目标未确认']}:{summary:'工作',items:[{id:randomUUID(),title:'推进',reason:'w'}],missing:[]};
     q.updateJob(user,'k0',j.job_id,'result',{lease_token:j.lease_token,status:'succeeded',output:out},++tt);
    }
   }
@@ -67,8 +68,14 @@ test('stage3: domain plans persist with basis, validity, version and confirmatio
   assert.equal(after.find(x=>x.domain==='work'&&x.version===1).status,'confirmed','其他领域方案不受影响，不会整套重算');
   assert.ok(!currentPlan(db(),user,'fitness'),'需复核方案不再是当前有效方案');
   assert.ok(currentPlan(db(),user,'work'),'工作方案仍可沿用');
-  // 调整接口：对已确认方案申请调整
+  // 调整接口：对已确认方案申请调整 → 调整请求持久化（跨重启可读），当前方案标记需复核
   const adj=adjustPlan(user,'work','训练计划调整后重新核对工作安排','AI');
   assert.equal(adj.status,'needs_review');
+  const adjReq=adjustmentRequests(user,{domain:'work'},db());
+  assert.equal(adjReq.length,1,'调整请求持久化保存');
+  assert.equal(adjReq[0].reason,'训练计划调整后重新核对工作安排');
+  assert.equal(adjReq[0].requester,'AI');
+  assert.equal(adjReq[0].related_version,1,'调整请求关联方案版本');
+  assert.equal(adjReq[0].status,'pending','尚未被下一轮分析处理');
  }finally{closeDb();rmSync(dir,{recursive:true,force:true})}
 });

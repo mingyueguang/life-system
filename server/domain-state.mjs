@@ -9,7 +9,7 @@ export const states=['insufficient','normal','attention','adjust'];
 export function assessDomain(d,user,domain,day,ctx,now=new Date()){
  const intake=ctx.intake?.[domain]||{};
  const missing=Array.isArray(intake.required_missing)?intake.required_missing:[];
- const cur=currentPlan(d,user,domain);
+ const cur=currentPlan(d,user,domain,now);
  const reasons=[];
  if(missing.length){reasons.push('关键资料未确认：'+missing.join('、')+'。数据缺失不算正常，不生成确定性方案，交由分析任务补资料并输出候选');return {state:'insufficient',decision:'analyze',reasons,missing,plan:null}}
  if(!cur){

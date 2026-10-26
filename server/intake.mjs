@@ -45,6 +45,16 @@ export function intakeSnapshot(d,user,domain){
  const records=d.prepare(`SELECT id,kind,payload,version,updated_at FROM records WHERE user_id=? AND deleted=0 AND kind IN (${kinds.map(()=>'?').join(',')}) ORDER BY id`).all(user,...kinds).map(r=>({id:r.id,kind:r.kind,data:JSON.parse(r.payload),version:r.version,updated_at:r.updated_at}));
  const context_hash=hash({fields,records});return {domain,role:domains[domain],fields,records,context_hash};
 }
+// 统一资料准备状态入口（批次 A 第二步）：规划、领域状态、方案确认、接口展示必须调用同一方法，
+// 避免不同模块对同一字段给出"已知/待核实"的分歧判断。与 intakeSnapshot 同源（fieldState）。
+export function intakeStatus(d,user){
+ const out={};
+ for(const domain of ['work','fitness','diet']){
+  const ctx=intakeSnapshot(d,user,domain);
+  out[domain]={fields:ctx.fields.map(f=>({key:f.key,label:f.label,question:f.question,required:f.required,status:f.status})),required_missing:ctx.fields.filter(f=>f.required&&f.status!=='known').map(f=>f.label),needs_review:ctx.fields.filter(f=>f.status==='needs_review').map(f=>f.label),known:ctx.fields.filter(f=>f.status==='known').map(f=>f.label)};
+ }
+ return out;
+}
 export function intakeOverview(user,domain,d=db()){
  const ctx=intakeSnapshot(d,user,domain);const reportRow=d.prepare('SELECT * FROM intake_reports WHERE user_id=? AND domain=?').get(user,domain);
  // Old proposals remain visible as history but must not be accepted against changed context.

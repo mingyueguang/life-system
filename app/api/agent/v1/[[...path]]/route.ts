@@ -7,7 +7,7 @@ import {overview,updateDay,generate,registerExecutor,setExecutor,saveSettings,to
 export const runtime='nodejs';export const dynamic='force-dynamic';
 export async function GET(req:Request){try{
  const url=new URL(req.url),path=url.pathname;
- if(path==='/api/agent/v1/health')return json({status:'ok',api_version:1,mode:'collaboration',model_connected:false,auth:'site_api_keys',release:'1.5.0',protocol_url:'/api/agent/v1/protocol'});
+ if(path==='/api/agent/v1/health')return json({status:'ok',api_version:1,mode:'collaboration',model_connected:false,auth:'site_api_keys',release:'1.6.0',protocol_url:'/api/agent/v1/protocol'});
  if(path==='/api/agent/v1'||path==='/api/agent/v1/'||path==='/api/agent/v1/protocol')return json(protocol());
  if(path==='/api/agent/v1/jobs/active'){const u=authorize(req,{workerOnly:true});return json(activeJobs(u.id,u.keyId))}
  const u=authorize(req);

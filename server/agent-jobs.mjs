@@ -1,9 +1,9 @@
 import {validateIntake,storeIntake,intakeSnapshot} from './intake.mjs';
-import {savePlan} from './domain-plans.mjs';
+import {savePlan,planBasis,markAdjustmentsHandled} from './domain-plans.mjs';
 import {contract} from './protocol.mjs';
 import {randomUUID} from 'node:crypto';
 import {db,transaction} from './database.mjs';
-import {fail,canon,planSchema,analysisSchema,fitnessPlanSchema,dietPlanSchema,reviewSchema,publishSchema,records,fingerprint} from './life.mjs';
+import {fail,canon,planSchema,analysisSchema,fitnessPlanSchema,dietPlanSchema,reviewSchema,publishSchema,records,fingerprint,settings} from './life.mjs';
 const leaseMs=r=>JSON.parse(r.request).mode==='live'&&!r.effect?600000:120000;
 const str=(v,max=200)=>typeof v==='string'&&v.length>0&&v.length<=max;
 const obj=v=>v!==null&&typeof v==='object'&&!Array.isArray(v);
@@ -89,12 +89,16 @@ function validateOutput(d,user,r,output){
   const confirmedPlans=req.payload.confirmed_plans||{};
   const sourceOk=i=>{
    if(!i.source_id)return true;
-   if(depResults.some(dr=>{const o=dr.result?.output||{};const list=dr.action==='analysis.fitness'?o.sessions:dr.action==='analysis.diet'?o.meals:null;return !!list&&list.some(x=>x.id===i.source_id);}))return true;
+   if(depResults.some(dr=>{const o=dr.result?.output||{};const list=dr.action==='analysis.fitness'?o.sessions:dr.action==='analysis.diet'?o.meals:dr.action.startsWith('analysis.')?o.items:null;return !!list&&list.some(x=>x.id===i.source_id);}))return true;
    const cp=confirmedPlans[i.domain];if(!cp)return false;
-   const items=i.domain==='fitness'?cp.plan.sessions:i.domain==='diet'?cp.plan.meals:cp.plan.recommendations||[];
+   const items=i.domain==='fitness'?cp.plan.sessions:i.domain==='diet'?cp.plan.meals:(cp.plan.items||[]);
    return Array.isArray(items)&&items.some(x=>x?.id===i.source_id);
   };
   if(p.items.some(i=>!sourceOk(i)))fail(400,'计划事项引用的专业方案项不存在');
+  // 批次 A 第二步：关键资料缺失的领域事项只能作为候选（deferred），不得进入正式执行清单。
+  const intake=req.payload.context.intake||{};
+  const blocked=p.items.filter(i=>i.domain&&(intake[i.domain]?.required_missing||[]).length>0);
+  if(blocked.length)fail(400,'领域「'+[...new Set(blocked.map(i=>i.domain))].join('、')+'」关键资料尚未确认（'+[...new Set(blocked.flatMap(i=>intake[i.domain].required_missing||[]))].join('、')+'），相关安排只能作为候选放入 deferred，不能进入正式执行清单');
   if(req.payload.context.records_version!==fingerprint(records(d,user)))fail(409,'业务数据已变化，请重新生成计划');
  }
  if(req.action==='daily.review')reviewSchema.parse(output);
@@ -120,7 +124,13 @@ export function updateJob(user,key,id,action,b,now=Date.now()){
   d.prepare('UPDATE agent_jobs SET status=?,result=?,updated=? WHERE id=?').run(status,canon({status,output:b.output}),now,id);audit(d,user,'result:'+status,id,now);
   const actionName=JSON.parse(r.request).action;
   if(status==='succeeded'&&actionName.startsWith('intake.'))storeIntake(d,user,r,b.output,now);
-  if(status==='succeeded'&&actionName.startsWith('analysis.'))savePlan(d,user,actionName.slice('analysis.'.length),{plan:b.output,source_job_id:r.id},new Date(now).toISOString());
+  // 批次 A 第三步：方案落库记录依据指纹（basis_hash）与按域复核周期（domain_review_days，可配置）；
+  // 分析成功即视为已处理该域待复核的调整请求（持久化标记 handled）。
+  if(status==='succeeded'&&actionName.startsWith('analysis.')){
+   const dom=actionName.slice('analysis.'.length),s=settings(user,d),reviewDays=(s.domain_review_days||{})[dom]||7;
+   const created=savePlan(d,user,dom,{plan:b.output,source_job_id:r.id,basis_hash:planBasis(d,user),review_at:new Date(now+reviewDays*86400000).toISOString()},new Date(now).toISOString());
+   markAdjustmentsHandled(d,user,dom,{by:'analysis:'+r.id,new_version:created.version,now:new Date(now).toISOString()});
+  }
   if(status==='succeeded'&&['daily.plan','daily.review'].includes(actionName)){
    const col=actionName==='daily.plan'?'plan':'review';
    d.prepare(`UPDATE daily_days SET ${col}=?,version=version+1,updated=? WHERE user_id=? AND day=? AND version=?`).run(JSON.stringify(b.output),now,user,r.day,r.base_version);

@@ -37,7 +37,7 @@ test('stage4: domain states drive reuse vs re-analysis; missing is not normal; s
   let t=now;
   for(let i=0;i<4;i++){
    const j=q.claimJob(user,'k0',{},++t).job;assert.ok(j,'第 '+(i+1)+' 个任务可领取');
-   const out=j.action==='analysis.fitness'?{summary:'训练',sessions:[{id:randomUUID(),title:'力量训练',minutes:30,reason:'g'}],missing:[]}:j.action==='analysis.diet'?{summary:'饮食',meals:[{id:randomUUID(),title:'早餐',reason:'g'}],missing:['饮食目标未确认']}:j.action==='analysis.work'?{summary:'工作',recommendations:['推进项目'],missing:[]}:{summary:'计划',items:[{id:randomUUID(),title:'推进项目',minutes:30,reason:'w',domain:'work'}],buffer_minutes:10,deferred:[],missing:[]};
+   const out=j.action==='analysis.fitness'?{summary:'训练',sessions:[{id:randomUUID(),title:'力量训练',minutes:30,reason:'g'}],missing:[]}:j.action==='analysis.diet'?{summary:'饮食',meals:[{id:randomUUID(),title:'早餐',reason:'g'}],missing:['饮食目标未确认']}:j.action==='analysis.work'?{summary:'工作',items:[{id:randomUUID(),title:'推进项目',reason:'w'}],missing:[]}:{summary:'计划',items:[{id:randomUUID(),title:'推进项目',minutes:30,reason:'w',domain:'work'}],buffer_minutes:10,deferred:[],missing:[]};
    q.updateJob(user,'k0',j.job_id,'result',{lease_token:j.lease_token,status:'succeeded',output:out},++t);
   }
   confirmPlan(user,'work',1,'website');
@@ -51,13 +51,14 @@ test('stage4: domain states drive reuse vs re-analysis; missing is not normal; s
   assert.ok(workLogs.some(x=>x.reasons.some(r=>r.includes('复核时间'))),'有效期与复核时间提示可查');
   assert.equal(st.find(x=>x.domain==='fitness').state,'adjust','有资料无方案的领域仍需分析');
   assert.equal(st.find(x=>x.domain==='diet').state,'insufficient','缺资料的领域仍不算正常，不会误判为沿用');
-  // 同一天已有未完成同类分析任务时，再次生成不重复派发
-  const runningBefore=q.listJobs(user,++t).jobs.filter(x=>x.day===day&&x.status==='queued'&&x.action.startsWith('analysis.'));
-  assert.ok(runningBefore.length>=1,'此时应有待执行的领域分析任务（fitness/diet）');
+  // 同一天同输入再次生成：不重复派发同类分析任务（成功结果被复用为统筹依赖）
+  const analysesBefore=q.listJobs(user,++t).jobs.filter(x=>x.day===day&&x.action.startsWith('analysis.'));
+  assert.ok(analysesBefore.length>=3,'第一次生成的分析任务已保留');
+  assert.ok(analysesBefore.every(x=>x.status==='succeeded'),'同输入分析结果保留为可复用成功结果');
   d=lifeMod.overview(user,day).day;d=lifeMod.updateDay(user,{day,version:d.version,operation:'input',data:{available_minutes:90,energy:3,fixed:'',note:''}},++t);
   lifeMod.generate(user,{day,kind:'plan',version:d.version},++t);
-  const runningAfter=q.listJobs(user,++t).jobs.filter(x=>x.day===day&&x.status==='queued'&&x.action.startsWith('analysis.'));
-  assert.ok(runningAfter.length<=runningBefore.length,'同一天不会因重复生成而重复派发同类分析任务');
+  const analysesAfter=q.listJobs(user,++t).jobs.filter(x=>x.day===day&&x.action.startsWith('analysis.'));
+  assert.ok(analysesAfter.length<=analysesBefore.length,'同一天不会因重复生成而重复派发同类分析任务（复用成功结果）');
   assert.ok(domainState(user,{day,domain:'fitness'},db()).domains.some(x=>x.reasons.some(r=>r.includes('不重复派发'))),'去重原因记录在审计中');
   // 补齐 diet 目标后：diet 变为有资料无方案 → adjust（重新分析）
   answer('diet','diet.goal','控制体重');

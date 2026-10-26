@@ -78,6 +78,14 @@ export function migrate(database){
     INSERT INTO schema_migrations VALUES(9);
    `);
   }
+  if(!database.prepare('SELECT 1 FROM schema_migrations WHERE version=10').get()){
+   database.exec(`
+    ALTER TABLE domain_plans ADD COLUMN basis_hash TEXT;
+    CREATE TABLE plan_adjustments(id TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id),domain TEXT NOT NULL CHECK(domain IN ('work','fitness','diet')),reason TEXT NOT NULL,requester TEXT NOT NULL,related_version INTEGER,status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','handled','cancelled')),created_at TEXT NOT NULL,handled_at TEXT,handled_by TEXT);
+    CREATE INDEX idx_plan_adjustments_lookup ON plan_adjustments(user_id,domain,status);
+    INSERT INTO schema_migrations VALUES(10);
+   `);
+  }
   database.exec('COMMIT');
  }catch(e){database.exec('ROLLBACK');throw e}
 }

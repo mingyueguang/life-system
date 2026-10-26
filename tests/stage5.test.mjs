@@ -26,16 +26,17 @@ test('stage5: server enforces time budget; plain record writes do not trigger re
   let t=now;
   for(let i=0;i<4;i++){
    const j=q.claimJob(user,'k0',{},++t).job;assert.ok(j,'第 '+(i+1)+' 个任务可领取');
-   const out=j.action==='analysis.fitness'?{summary:'训练',sessions:[{id:fitItem,title:'力量训练',minutes:30,reason:'g'}],missing:[]}:j.action==='analysis.diet'?{summary:'饮食',meals:[{id:randomUUID(),title:'早餐',reason:'g'}],missing:[]}:j.action==='analysis.work'?{summary:'工作',recommendations:['推进项目'],missing:[]}:{summary:'计划',items:[{id:randomUUID(),title:'推进项目',minutes:30,reason:'w',domain:'work'}],buffer_minutes:10,deferred:[],missing:[]};
+   const out=j.action==='analysis.fitness'?{summary:'训练',sessions:[{id:fitItem,title:'力量训练',minutes:30,reason:'g'}],missing:[]}:j.action==='analysis.diet'?{summary:'饮食',meals:[{id:randomUUID(),title:'早餐',reason:'g'}],missing:[]}:j.action==='analysis.work'?{summary:'工作',items:[{id:randomUUID(),title:'推进项目',reason:'w'}],missing:[]}:{summary:'计划',items:[{id:randomUUID(),title:'推进项目',minutes:30,reason:'w',domain:'work'}],buffer_minutes:10,deferred:[],missing:[]};
    q.updateJob(user,'k0',j.job_id,'result',{lease_token:j.lease_token,status:'succeeded',output:out},++t);
   }
   confirmPlan(user,'fitness',1,'website');
   // 1) 服务器强制时间预算：可用 60 分钟，计划 70+10 分钟 → 400
   d=lifeMod.overview(user,day).day;d=lifeMod.updateDay(user,{day,version:d.version,operation:'input',data:{available_minutes:60,energy:3,fixed:'',note:''}},++t);
   lifeMod.generate(user,{day,kind:'plan',version:d.version},++t);
+  // 同输入重复生成：分析任务复用，只派发新的统筹任务。
   let planJob=null,prev=t;
-  for(let i=0;i<3;i++){const j=q.claimJob(user,'k0',{},++t).job;assert.ok(j);if(j.action==='daily.plan'){planJob=j;continue}
-   const out=j.action==='analysis.work'?{summary:'工作',recommendations:['推进项目'],missing:[]}:{summary:'饮食',meals:[{id:randomUUID(),title:'早餐',reason:'g'}],missing:[]};
+  for(let i=0;i<3&&!planJob;i++){const j=q.claimJob(user,'k0',{},++t).job;if(!j)break;if(j.action==='daily.plan'){planJob=j;break}
+   const out=j.action==='analysis.work'?{summary:'工作',items:[{id:randomUUID(),title:'推进项目',reason:'w'}],missing:[]}:{summary:'饮食',meals:[{id:randomUUID(),title:'早餐',reason:'g'}],missing:[]};
    q.updateJob(user,'k0',j.job_id,'result',{lease_token:j.lease_token,status:'succeeded',output:out},++t)}
   // fitness 已确认沿用 → 实际只有 diet/work 分析 + 统筹
   assert.ok(planJob,'统筹任务存在');
