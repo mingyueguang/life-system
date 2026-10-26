@@ -69,7 +69,7 @@ function requireMissing(req,domain,output){
  const missing=Array.isArray(intake?.required_missing)?intake.required_missing:[];
  if(missing.length&&!(Array.isArray(output.missing)&&output.missing.length))fail(400,'关键资料缺失（'+missing.join('、')+'）时必须列出 missing，不能输出确定性方案');
 }
-function validateOutput(d,user,r,output){
+function validateOutput(d,user,r,output,status){
  const req=JSON.parse(r.request);
  if(req.action.startsWith('intake.')){validateIntake(d,user,r,output);return}
  if(req.action==='simulation.noop'){if(output.simulated!==true||output.external_effect!==false)fail(400,'模拟结果必须声明 simulated=true、external_effect=false');return}
@@ -107,7 +107,11 @@ function validateOutput(d,user,r,output){
   const key=req.action==='feishu.publish.fitness'?'sessions':req.action==='feishu.publish.diet'?'meals':'items';
   const ids=(req.payload.plan[key]||[]).map(x=>x.id);
   if(!ids.length)ids.push('summary');
-  if(v.receipts.length!==ids.length||new Set(v.receipts.map(x=>x.item_id)).size!==ids.length||v.receipts.some(x=>!ids.includes(x.item_id)))fail(400,'回执必须覆盖每个事项，且不能重复');
+  if(status==='succeeded'&&(v.receipts.length!==ids.length||new Set(v.receipts.map(x=>x.item_id)).size!==ids.length||v.receipts.some(x=>!ids.includes(x.item_id))))fail(400,'成功回执必须覆盖每个事项，且不能重复');
+  if(status==='needs_review'){
+   if(!v.receipts.length&&!Array.isArray(v.publish_missing))fail(400,'部分成功需给出已有回执（receipts）或结果不明事项（publish_missing）');
+   if(v.receipts.some(x=>!ids.includes(x.item_id)))fail(400,'回执事项不在本次发布范围内');
+  }
  }
  if(r.day&&!r.effect){const day=d.prepare('SELECT * FROM daily_days WHERE user_id=? AND day=?').get(user,r.day);if(!day||day.version!==r.base_version)fail(409,'每日数据已变化，本次结果已过期，请重新生成');}
 }
@@ -120,9 +124,21 @@ export function updateJob(user,key,id,action,b,now=Date.now()){
   const status=r.effect&&b.status==='failed'?'needs_review':b.status;
   const result=canon({status,output:b.output});if(r.result===result)return {ok:true,duplicate:true};
   if(r.status!=='running'||r.expires<=now)fail(409,'任务已结束或领取超时，需核对后处理');
-  if(b.status==='succeeded'){try{validateOutput(d,user,r,b.output)}catch(e){if(e?.name==='ZodError'){e.issues.forEach(i=>i.path.unshift('output'));e.example=contract(JSON.parse(r.request).action).success_example}throw e}}
+  if(b.status==='succeeded'){try{validateOutput(d,user,r,b.output,b.status)}catch(e){if(e?.name==='ZodError'){e.issues.forEach(i=>i.path.unshift('output'));e.example=contract(JSON.parse(r.request).action).success_example}throw e}}
   d.prepare('UPDATE agent_jobs SET status=?,result=?,updated=? WHERE id=?').run(status,canon({status,output:b.output}),now,id);audit(d,user,'result:'+status,id,now);
   const actionName=JSON.parse(r.request).action;
+  // 批次 B（第五步）：发布回执持久化——成功或需核对（部分成功）都写入，外部执行者可查询
+  // 已成功事项与结果不明事项，恢复时只补缺失，不整批重做。
+  // 部分成功：output.receipts 中返回的项已取得外部 ID，记为 succeeded；
+  //           其余事项（未返回回执 / output.publish_missing 标记的）记为 unknown，供核对后补发。
+  if(actionName.startsWith('feishu.publish')&&r.day&&(Array.isArray(b.output?.receipts)||Array.isArray(b.output?.publish_missing))){
+   const key=actionName==='feishu.publish.fitness'?'sessions':actionName==='feishu.publish.diet'?'meals':'items';
+   const planIds=(JSON.parse(r.request).payload?.plan?.[key]||[]).map(x=>x.id);
+   d.prepare('DELETE FROM publish_receipts WHERE user_id=? AND day=? AND action=?').run(user,r.day,actionName);
+   for(const rec of b.output.receipts||[])d.prepare('INSERT OR REPLACE INTO publish_receipts(user_id,day,action,item_id,external_id,status,created) VALUES(?,?,?,?,?,?,?)').run(user,r.day,actionName,rec.item_id,rec.external_id||'','succeeded',now);
+   const missing=Array.isArray(b.output.publish_missing)?b.output.publish_missing:(b.status!=='succeeded'?planIds.filter(id=>!(b.output.receipts||[]).some(x=>x.item_id===id)):[]);
+   for(const id of missing)d.prepare('INSERT OR REPLACE INTO publish_receipts(user_id,day,action,item_id,external_id,status,created) VALUES(?,?,?,?,?,?,?)').run(user,r.day,actionName,id,'','unknown',now);
+  }
   if(status==='succeeded'&&actionName.startsWith('intake.'))storeIntake(d,user,r,b.output,now);
   // 批次 A 第三步：方案落库记录依据指纹（basis_hash）与按域复核周期（domain_review_days，可配置）；
   // 分析成功即视为已处理该域待复核的调整请求（持久化标记 handled）。

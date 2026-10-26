@@ -26,7 +26,7 @@ test('independent account, API permissions, persistence and conflict protection'
   }
   await start();
   const protocol=await req('/api/agent/v1/');assert.equal(protocol.status,200);assert.ok(protocol.data.actions['daily.plan'].output_schema.required.includes('items'));
-  assert.equal(protocol.data.protocol_version,'1.6.0');
+  assert.equal(protocol.data.protocol_version,'1.7.0');
   assert.ok(protocol.data.actions['feishu.publish.fitness']&&protocol.data.actions['feishu.publish.diet']);
   assert.equal(protocol.data.actions['feishu.publish.fitness'].output_schema.required.includes('receipts'),true);
   // 契约自描述：错误码字典、租约时长与外部效果声明随协议返回，AI 不需要猜。
@@ -35,7 +35,7 @@ test('independent account, API permissions, persistence and conflict protection'
   assert.equal(protocol.data.actions['daily.plan'].external_effect,false);
   assert.equal(protocol.data.actions['feishu.publish'].lease_seconds,120);
   assert.equal(protocol.data.actions['feishu.publish'].external_effect,true);
-  const health=await req('/api/agent/v1/health');assert.equal(health.data.release,'1.6.0');
+  const health=await req('/api/agent/v1/health');assert.equal(health.data.release,'1.7.0');
   assert.equal((await req('/api/v1/records')).status,401);
   assert.equal((await req('/api/auth/status')).data.registered,false);
   const email='owner@example.test',password='Long-test-password-123!';
@@ -142,7 +142,7 @@ test('independent account, API permissions, persistence and conflict protection'
   const deleted=await req('/api/v1/records',{method:'POST',token:write.data.token,data:{...record,version:2,deleted:true}});assert.equal(deleted.status,200);
   assert.equal((await req('/api/v1/records',{cookie})).data.records.some(r=>r.id===record.id),false);
   const sinceRows=(await req('/api/v1/records?since=2000-01-01T00%3A00%3A00.000Z',{cookie})).data.records;assert.equal(sinceRows.find(r=>r.id===record.id).deleted,true);
-  const schema=await req('/api/v1/schema',{token:write.data.token});assert.equal(schema.status,200);assert.equal(schema.data.protocolVersion,'1.6.0');assert.ok(schema.data.schemas.mood.properties.text);assert.ok(schema.data.metadataSchema.properties.source);
+  const schema=await req('/api/v1/schema',{token:write.data.token});assert.equal(schema.status,200);assert.equal(schema.data.protocolVersion,'1.7.0');assert.ok(schema.data.schemas.mood.properties.text);assert.ok(schema.data.metadataSchema.properties.source);
   const provenance={request_id:randomUUID(),id:randomUUID(),kind:'phone_usage',version:0,data:{date:'2026-10-25',minutes:90},metadata:{source:{method:'device',original_text:'设备统计 90 分钟'}}};
   assert.equal((await req('/api/v1/records',{method:'POST',token:write.data.token,data:provenance})).status,200);
   assert.equal((await req('/api/v1/records',{method:'POST',token:write.data.token,data:provenance})).data.duplicate,true);

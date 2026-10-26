@@ -3,17 +3,18 @@ import {protocol} from '@/server/protocol.mjs';
 import {authorize,HttpError} from '@/server/auth.mjs';
 import {json,body,failure} from '@/server/http.mjs';
 import {activeJobs,listJobs,createJob,claimJob,updateJob,resolveJob,saveEvent} from '@/server/agent-jobs.mjs';
-import {overview,updateDay,generate,registerExecutor,setExecutor,saveSettings,today,tick} from '@/server/life.mjs';
+import {overview,updateDay,generate,registerExecutor,setExecutor,saveSettings,today,tick,publishReceipts} from '@/server/life.mjs';
 export const runtime='nodejs';export const dynamic='force-dynamic';
 export async function GET(req:Request){try{
  const url=new URL(req.url),path=url.pathname;
- if(path==='/api/agent/v1/health')return json({status:'ok',api_version:1,mode:'collaboration',model_connected:false,auth:'site_api_keys',release:'1.6.0',protocol_url:'/api/agent/v1/protocol'});
+ if(path==='/api/agent/v1/health')return json({status:'ok',api_version:1,mode:'collaboration',model_connected:false,auth:'site_api_keys',release:'1.7.0',protocol_url:'/api/agent/v1/protocol'});
  if(path==='/api/agent/v1'||path==='/api/agent/v1/'||path==='/api/agent/v1/protocol')return json(protocol());
  if(path==='/api/agent/v1/jobs/active'){const u=authorize(req,{workerOnly:true});return json(activeJobs(u.id,u.keyId))}
  const u=authorize(req);
  if(path==='/api/agent/v1/intake')return json(intakeOverview(u.id,url.searchParams.get('domain')||'work'));
  if(path==='/api/agent/v1/jobs')return json(listJobs(u.id));
  if(path==='/api/agent/v1/overview')return json(overview(u.id,url.searchParams.get('day')||today()));
+ if(path==='/api/agent/v1/publish-receipts'){const a=url.searchParams.get('action');return json(publishReceipts(u.id,url.searchParams.get('day')||today(),a?a:undefined))}
  throw new HttpError(404,'接口不存在');
 }catch(e){return failure(e)}}
 export async function POST(req:Request){try{

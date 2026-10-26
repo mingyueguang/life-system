@@ -1,3 +1,12 @@
+# 1.7.0 · 2026-10-27（批次 B：状态驱动分析 / 统一次日统筹与外部执行）
+
+- **第四步：状态驱动分析（domain_state 四态 + 信号持久化）**：`assessDomain` 按信号规则确定性推导四态——关键资料缺失→`insufficient/analyze`；待处理调整请求→`adjust/analyze`；无有效方案或复核到期→`adjust/analyze`；持久偏离（重复跳过 / 按域超时）→`adjust/analyze`（只影响受影响领域）；昨日未完成结转→`attention/reuse`；精力骤降等软信号→`attention/reuse`；否则 `normal/reuse`。判定顺序先于旧的 needs_review 启发式。每条记录写入 `signals`（来源/规则/结果/说明）与 `pending_adjustments`，`GET /api/v1/domain-state` 可查；单次未完成只结转不废弃领域方案（原阶段 6"未完成即标 needs_review"逻辑删除，由次日状态机统一决定沿用/重算）。
+- **第五步：统一次日统筹与外部执行**：`generate` 不再自行重复判 pending（由状态机统一），同输入分析复用仅在 `pending_adjustments===0` 时生效；统筹 role 明确 `available_minutes` 为可分配给清单的净时间（固定安排已扣除，不要重复扣减），服务器校验总耗时+机动≤净时间；今日复盘未返回时生成"待复盘草案"（summary 注明依据），迟到复盘由版本校验拒绝、不得静默修改已确认计划。
+- **发布回执持久化（外部执行可核对、可恢复）**：`feishu.publish*` 回传结果时持久化 `publish_receipts`（user_id/day/action/item_id 主键，status ∈ succeeded/unknown）：回执返回的项记 succeeded；部分成功（needs_review）未返回回执或 `publish_missing` 标记的项记 unknown。校验放宽：succeeded 必须全覆盖且不重复；needs_review 允许部分回执 + publish_missing（回执不得越界到本次发布范围之外）。新接口 `GET /api/agent/v1/publish-receipts?day=&action=`。恢复时只补缺失事项、不整批重做；重复确认不新建发布批次。
+- 数据迁移 v11（增量、兼容）：domain_state_log 加 signals、pending_adjustments 列；新建 publish_receipts 表与查询索引。
+- 协议版本 1.7.0（package.json / package-lock / schema protocolVersion / health release / protocol.mjs / ai-guide.md 同步）；publish 契约新增部分成功与恢复规则。
+- 测试：新增批次 B 专项测试 5 项（单次未完成不废弃/沿用+结转、repeated_skip 仅重算受影响域、待处理调整请求触发重算+pending 可查、回执持久化+部分成功不整批重做+重复确认不新建发布批次、净时间预算拒绝+待复盘草案标注）；旧测试同步（版本断言 1.7.0、stage6 单次未完成不废弃、stage7 经 adjustPlan 申请调整触发重算）。26/26 通过，typecheck 通过。
+
 # 1.6.0 · 2026-10-26（批次 A：任务依赖 / 资料门槛 / 方案生命周期）
 
 - **任务生成与依赖修复（第一步）**：生成前按输入指纹（records_version）查找该日同输入的分析任务——进行中或已完成的分析直接作为本次统筹的前置依赖复用（不重复派发）；输入已变化时先失效旧版统筹与分析任务（旧执行者回传被版本校验拒绝，不会回写）。去掉按天粗粒度去重导致的"新统筹失去前置依赖"问题；"正在分析/已有有效方案/资料不足"由领域状态规则独立判定。

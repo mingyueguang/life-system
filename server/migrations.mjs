@@ -86,6 +86,15 @@ export function migrate(database){
     INSERT INTO schema_migrations VALUES(10);
    `);
   }
+  if(!database.prepare('SELECT 1 FROM schema_migrations WHERE version=11').get()){
+   database.exec(`
+    ALTER TABLE domain_state_log ADD COLUMN signals TEXT NOT NULL DEFAULT '[]';
+    ALTER TABLE domain_state_log ADD COLUMN pending_adjustments INTEGER NOT NULL DEFAULT 0;
+    CREATE TABLE publish_receipts(user_id TEXT NOT NULL,day TEXT NOT NULL,action TEXT NOT NULL,item_id TEXT NOT NULL,external_id TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'succeeded' CHECK(status IN ('succeeded','unknown')),created INTEGER NOT NULL,PRIMARY KEY(user_id,day,action,item_id));
+    CREATE INDEX idx_publish_receipts_lookup ON publish_receipts(user_id,day,action);
+    INSERT INTO schema_migrations VALUES(11);
+   `);
+  }
   database.exec('COMMIT');
  }catch(e){database.exec('ROLLBACK');throw e}
 }

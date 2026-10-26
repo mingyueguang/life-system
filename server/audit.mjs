@@ -25,7 +25,7 @@ export function auditContext(d, user, day, {all, recent, adjust = {overrun_facto
 
   // Titles from the previous 7 natural days' confirmed/feedback plans.
   const recentDoneTitles = new Set();
-  const recentSkips = {};
+  const recentSkips = {}; // title -> {count, domain}
   const recentOverruns = [];
   // Carryover keyed by a stable identity (task_id when linked, otherwise title
   // as an ambiguous candidate), decided by the LATEST feedback state: once an
@@ -46,7 +46,10 @@ export function auditContext(d, user, day, {all, recent, adjust = {overrun_facto
         continue;
       }
       if (!enabled) continue;
-      if (fb.status === 'skipped') recentSkips[norm(it.title)] = (recentSkips[norm(it.title)] || 0) + 1;
+      if (fb.status === 'skipped') {
+        const prev = recentSkips[norm(it.title)] || {count: 0, domain: it.domain || null};
+        recentSkips[norm(it.title)] = {count: prev.count + 1, domain: it.domain || prev.domain};
+      }
       if (adjust.skip_carryover !== false && (fb.status === 'skipped' || fb.status === 'partial')) {
         const existing = carryover.get(key);
         if (existing?.done) continue; // latest state is done → do not carry
@@ -94,8 +97,8 @@ export function auditContext(d, user, day, {all, recent, adjust = {overrun_facto
         anomalies.push({code: 'energy_drop', severity: 'medium', detail: `今日精力自评 ${input.energy}，明显低于近 7 天均值（${avg.toFixed(1)}），请确认任务量是否合适`});
       }
     }
-    for (const [t, n] of Object.entries(recentSkips)) {
-      if (n >= 2) anomalies.push({code: 'repeated_skip', severity: 'medium', detail: `「${t}」近 7 天已跳过 ${n} 次，继续安排前请确认是否保留或调整`});
+    for (const [t, rec] of Object.entries(recentSkips)) {
+      if (rec.count >= 2) anomalies.push({code: 'repeated_skip', severity: 'medium', domain: rec.domain || null, detail: `「${t}」近 7 天已跳过 ${rec.count} 次，继续安排前请确认是否保留或调整`});
     }
     for (const o of recentOverruns.slice(0, 5)) {
       anomalies.push({code: 'time_overrun', severity: 'low', detail: `「${o.title}」计划 ${o.planned} 分钟实际 ${o.actual} 分钟（${o.day}），请评估后续安排是否合理`});

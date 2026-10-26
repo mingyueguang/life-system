@@ -6,7 +6,7 @@ import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {db,closeDb} from '../server/database.mjs';
-import {confirmPlan,currentPlan,plans} from '../server/domain-plans.mjs';
+import {confirmPlan,currentPlan,plans,adjustPlan} from '../server/domain-plans.mjs';
 
 function setupUser(now,email,suffix){
  const user='owner';const key='k'+suffix;
@@ -76,12 +76,15 @@ test('stage7-A: full business loop with simulated dates - final acceptance scena
   let r3=await runRound(user,key,day3,{budget:35,planItems:{summary:'时间紧张',items:[{id:randomUUID(),title:'力量训练',minutes:20,reason:'沿用',domain:'fitness',source_id:fitId(day1)},{id:randomUUID(),title:'推进项目',minutes:10,reason:'压缩',domain:'work'}],buffer_minutes:5,deferred:['早餐'],missing:[]}});
   assert.equal(r3.analysis.length,0,'时间减少只重新统筹，不重算领域方案');
   d=life.overview(user,day3).day;life.updateDay(user,{day:day3,version:d.version,operation:'confirm',data:{}},++now);
-  // 6) 训练出现异常：反馈部分完成 → 只调整健身领域
+  // 6) 训练出现明确异常：申请调整健身方案 → 只调整健身领域
   const items3=JSON.parse(db().prepare('SELECT plan FROM daily_days WHERE user_id=? AND day=?').get(user,day3).plan).items;
   const fitItem3=items3.find(x=>x.domain==='fitness');
   d=life.overview(user,day3).day;
   life.updateDay(user,{day:day3,version:d.version,operation:'feedback',data:{item_id:fitItem3.id,status:'partial',actual_minutes:null,note:'只完成热身'}},++now);
-  assert.equal(currentPlan(db(),user,'fitness'),null,'异常反馈后健身方案标记需复核');
+  assert.ok(currentPlan(db(),user,'fitness'),'单次部分完成保留反馈，健身方案仍有效（批次 B）');
+  // 用户明确要求调整 → 持久化调整请求 + 方案标记需复核
+  adjustPlan(user,'fitness','力量训练强度需要下调','user');
+  assert.equal(currentPlan(db(),user,'fitness'),null,'申请调整后健身方案标记需复核');
   const day4='2026-10-28';
   let r4=await runRound(user,key,day4,{budget:90,planItems:{summary:'调整后计划',items:[{id:randomUUID(),title:'力量训练',minutes:30,reason:'新方案',domain:'fitness',source_id:fitId(day4)},{id:randomUUID(),title:'推进项目',minutes:50,reason:'沿用',domain:'work'}],buffer_minutes:10,deferred:[],missing:[]}});
   assert.ok(r4.analysis.some(x=>x.action==='analysis.fitness'),'健身重新分析');

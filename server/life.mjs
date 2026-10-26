@@ -26,7 +26,7 @@ export const fitnessPlanSchema=z.object({summary:text,sessions:z.array(fitnessIt
 const dietItem=z.object({id:z.string().uuid(),title:text,reason:text}).strict();
 export const dietPlanSchema=z.object({summary:text,meals:z.array(dietItem).max(30),missing:z.array(text).max(20)}).strict();
 export const reviewSchema=z.object({summary:text,observations:z.array(text).max(30),adjustments:z.array(text).max(30),missing:z.array(text).max(20)}).strict();
-export const publishSchema=z.object({external_effect:z.literal(true),receipts:z.array(z.object({item_id:z.string(),external_id:text,url:z.string().url().optional()}).strict()).min(1).max(41)}).strict();
+export const publishSchema=z.object({external_effect:z.literal(true),receipts:z.array(z.object({item_id:z.string(),external_id:text,url:z.string().url().optional()}).strict()).min(1).max(41),publish_missing:z.array(z.string()).max(41).optional()}).strict();
 const autoAdjustSchema=z.object({enabled:z.boolean(),overrun_factor:z.number().min(1).max(5),energy_drop_threshold:z.number().int().min(1).max(5),skip_carryover:z.boolean()}).strict();
 const domainReviewSchema=z.object({work:z.number().int().min(1).max(90),fitness:z.number().int().min(1).max(90),diet:z.number().int().min(1).max(90)}).strict();
 const REVIEW_DEFAULTS={work:7,fitness:7,diet:7};
@@ -85,25 +85,26 @@ function generateIn(d,user,day,kind,version,now){
   states[domain]=st;
   if(st.decision==='reuse'){const cur=currentPlan(d,user,domain,new Date(now));if(cur)confirmed[domain]=cur}
  }
+ // 次日统筹在今日复盘未返回时生成的是标明依据的草案；复盘迟到结果由版本校验拒绝，不会静默修改已确认计划。
+ const reviewPending=!unpackDay(ensureDay(d,user,day,now)).review&&!unpackDay(ensureDay(d,user,day,now)).confirmed;
  const deps=[];
  for(const domain of ['work','fitness','diet']){
   if(states[domain].decision!=='analyze')continue;
   const ex=sameInputAnalysis(d,user,day,domain,rv);
-  const pending=pendingAdjustments(d,user,domain,nowIso);
-  if(ex&&pending.length===0){
+  if(ex&&states[domain].pending_adjustments===0){
    states[domain].reasons.push('同输入（同一记录版本）已有'+(ex.status==='succeeded'?'完成':'进行中')+'的分析任务，直接作为本次统筹的前置依赖，不重复派发');
    logDomainState(d,user,day,domain,states[domain],nowIso);
    deps.push(ex.id);
    continue;
   }
-  if(pending.length)states[domain].reasons.push('领域有 '+pending.length+' 项待处理调整请求，触发重新分析');
+  if(states[domain].pending_adjustments>0)states[domain].reasons.push('领域有 '+states[domain].pending_adjustments+' 项待处理调整请求，触发重新分析');
   const role={work:'目标与工作分析：权衡目标、截止时间、耗时与优先级，提出可执行建议；输出结构化事项（items，每项含 id/title/reason）供统筹引用。工作关键资料（目标/现状）未确认时列入 missing，不编造完成情况。请说明如何处理相关调整请求（context.adjustments 或 payload.adjustments）。',fitness:'健身方案：结合训练目标、现状与运动记录给出次日可行的训练安排（含时长），不诊断伤病。若训练目标、现状或限制等关键资料尚未确认（见 context.intake.fitness.required_missing / needs_review），在 missing 中列出并输出“暂无法制定完整方案”的候选，不编造训练内容。请说明如何处理相关调整请求。',diet:'饮食方案：结合目标、习惯与预算给出次日可行的饮食安排，不设定医学结论。若饮食目标、习惯或限制等关键资料尚未确认（见 context.intake.diet.required_missing / needs_review），在 missing 中列出并输出“暂无法制定完整方案”的候选，不编造饮食安排。请说明如何处理相关调整请求。'}[domain];
   deps.push(enqueue(d,user,{idem:prefix+':'+domain,action:'analysis.'+domain,day,version,payload:{...common,role,adjustments:pendingAdjustments(d,user,domain,nowIso)}},now));
  }
  // 统一失效该日旧版统筹与旧分析（queued/running；被复用的同输入任务保留）——旧执行者回传时会被版本校验拒绝，不会回写。
  const keep=new Set(deps);
  d.prepare("SELECT id,request FROM agent_jobs WHERE user_id=? AND day=? AND status IN ('queued','running')").all(user,day).forEach(x=>{const req=JSON.parse(x.request);if((req.action==='daily.plan'||req.action==='daily.review'||req.action.startsWith('analysis.'))&&!keep.has(x.id))d.prepare("UPDATE agent_jobs SET status='cancelled',updated=? WHERE id=?").run(now,x.id)});
- return {job_id:enqueue(d,user,{idem:prefix,action:'daily.plan',day,version,dependencies:deps,payload:{...common,confirmed_plans:confirmed,domain_states:states,role:'统筹：综合已确认方案（confirmed_plans，直接引用其事项 id 作 source_id）与本次前置分析结果，形成唯一无冲突的计划草案。domain_states 说明各领域状态与沿用/分析原因；各领域调整请求由对应分析任务处理。任务使用 UUID；每项须标明 domain（work/fitness/diet）和来源 source_id（引用被选中的方案事项 id），未选中的专业事项放入 deferred 并说明。某领域关键资料缺失（context.intake.<domain>.required_missing 非空）时，该领域安排只能作为候选放入 deferred，不得进入正式执行清单。时间预算由服务器校验：总耗时加机动不得超过已知可用时间；固定安排（context.day.input.fixed）占用的时间要计入预算，无法从文本解析时在 missing 中说明，不硬排精确时间槽。重要临时事项（context.records 中新增的 task/note 类记录）与昨日结转（carryover）优先纳入今日计划，避免无限拖延；核对清单（audit）中已完成或过期的记录仅作提示，周期事项照常安排。'}},now)};
+ return {job_id:enqueue(d,user,{idem:prefix,action:'daily.plan',day,version,dependencies:deps,payload:{...common,confirmed_plans:confirmed,domain_states:states,role:'统筹：综合已确认方案（confirmed_plans，直接引用其事项 id 作 source_id）与本次前置分析结果，形成唯一无冲突的计划草案。domain_states 说明各领域状态与沿用/分析原因；各领域调整请求由对应分析任务处理。任务使用 UUID；每项须标明 domain（work/fitness/diet）和来源 source_id（引用被选中的方案事项 id），未选中的专业事项放入 deferred 并说明。某领域关键资料缺失（context.intake.<domain>.required_missing 非空）时，该领域安排只能作为候选放入 deferred，不得进入正式执行清单。时间预算由服务器校验：总耗时加机动不得超过已知可用时间；available_minutes 表示可分配给清单的净时间（填写时已扣除固定安排），不要再次扣减 fixed 文本中的时间；无法从文本解析固定安排时在 missing 中说明，不硬排精确时间槽。'+(reviewPending?'今日复盘尚未返回，本草案为待复盘草案：复盘返回后如需调整，按新版本重新生成，不得静默修改已确认计划；若复盘将迟到，按当前资料生成草案并在 summary 中注明依据。':'')+'重要临时事项（context.records 中新增的 task/note 类记录）与昨日结转（carryover）优先纳入今日计划，避免无限拖延；核对清单（audit）中已完成或过期的记录仅作提示，周期事项照常安排。'}},now)};
 }
 export function updateDay(user,b,now=Date.now()){
  const v=z.object({day:dateSchema,version:z.number().int(),operation:z.enum(['input','feedback','confirm','reopen']),data:z.unknown().optional(),actor:z.string().max(80).optional()}).strict().parse(b);
@@ -115,12 +116,10 @@ export function updateDay(user,b,now=Date.now()){
   const item=JSON.parse(r.plan).items.find(x=>x.id===data.item_id);
   if(!item)fail(400,'计划中没有此事项');
   const feedback=JSON.parse(r.feedback);feedback[data.item_id]={...data,updated:now};d.prepare('UPDATE daily_days SET feedback=?,review=NULL,version=version+1,updated=? WHERE user_id=? AND day=?').run(JSON.stringify(feedback),now,user,v.day);
-  // 阶段 6：明确反馈异常（未完成/部分完成）→ 该领域已确认方案标记需复核（幂等，无方案静默跳过）。
-  // 复核只做标记，不自动重新分析；下一轮生成时由领域状态规则决定是否重新分析，普通波动不触发。
-  if((data.status==='skipped'||data.status==='partial')&&item.domain){
-   const iso=new Date(now).toISOString();
-   d.prepare("UPDATE domain_plans SET status='needs_review',updated_at=? WHERE user_id=? AND domain=? AND status='confirmed' AND review_at>?").run(iso,user,item.domain,iso);
-  }
+  // 批次 B（第四步）：单次部分完成/未完成只保留反馈并评估，不直接废弃领域方案。
+  // 不在此处把领域方案标记 needs_review；次日生成时由领域状态规则（assessDomain）根据结转
+  // 与持久偏离信号（repeated_skip/time_overrun，阈值来自 life_settings.auto_adjust）决定
+  // 沿用（attention）还是重新分析（adjust），普通波动不触发重算。
  }
  if(v.operation==='confirm'){
   if(!r.plan)fail(409,'还没有计划草案');if(r.confirmed)return unpackDay(r);
@@ -179,3 +178,13 @@ export function registerExecutor(user,key,b,now=Date.now()){
 }
 export function setExecutor(user,b){const v=z.object({key_id:z.string(),enabled:z.boolean(),max_parallel:z.number().int().safe().min(1)}).strict().parse(b);const r=db().prepare('UPDATE executors SET enabled=?,max_parallel=? WHERE key_id=? AND user_id=?').run(v.enabled?1:0,v.max_parallel,v.key_id,user);if(!r.changes)fail(404,'执行者不存在');return {ok:true}}
 export function overview(user,day){dateSchema.parse(day);const ctx=context(db(),user,day);const executors=db().prepare('SELECT e.*,k.expires_at,k.name AS key_name FROM executors e LEFT JOIN api_keys k ON k.id=e.key_id WHERE e.user_id=?').all(user).map(r=>({...r,capabilities:JSON.parse(r.capabilities),online:!!r.expires_at&&r.expires_at>Date.now()&&!!r.enabled&&r.last_seen>Date.now()-180000}));return {day:ctx.day,carryover:ctx.carryover,settings:settings(user),executors};}
+// 批次 B（第五步）：发布回执持久化查询——部分成功/结果不明时，外部执行者可精确恢复
+// （只重做缺失事项，不整批重做）。receipts 在 feishu.publish 成功/需核对回传时写入。
+/** @param {string} user @param {string} day @param {string|null} [action] */
+export function publishReceipts(user,day,action=undefined,d=db()){
+ dateSchema.parse(day);
+ const cond=['user_id=? AND day=?'];const args=[user,day];
+ if(typeof action==='string'&&action){cond.push('action=?');args.push(action)}
+ const rows=d.prepare(`SELECT action,item_id,external_id,status,created FROM publish_receipts WHERE ${cond.join(' AND ')} ORDER BY action,item_id`).all(...args);
+ return {day,receipts:rows,note:'已成功事项不可重复发布；结果不明事项先核对（GET /jobs/active、外部系统），确认未生效再补发'};
+}

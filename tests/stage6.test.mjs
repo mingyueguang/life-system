@@ -40,12 +40,11 @@ test('stage6: execution feedback closes the loop - done never carried over; part
   const fitPlanItem=planItems.find(x=>x.domain==='fitness'),workPlanItem=planItems.find(x=>x.domain==='work'),dietPlanItem=planItems.find(x=>x.domain==='diet');
   let d3=lifeMod.overview(user,next).day;
   lifeMod.updateDay(user,{day:next,version:d3.version,operation:'confirm',data:{}},++t);
-  // 1) 部分完成：实际时长可空（不要求精确耗时），带原因 → fitness 方案标需复核
+  // 1) 部分完成：实际时长可空（不要求精确耗时），带原因 → 反馈保留，领域方案仍有效（批次 B：单次未完成不废弃方案）
   d3=lifeMod.overview(user,next).day;
   lifeMod.updateDay(user,{day:next,version:d3.version,operation:'feedback',data:{item_id:fitPlanItem.id,status:'partial',actual_minutes:null,note:'只完成热身'}},++t);
-  const fp=currentPlan(db(),user,'fitness');
-  assert.equal(fp,null,'fitness 已确认方案被标记复核，不再是有效方案');
-  assert.equal(plans(user,'fitness','needs_review',db()).length,1,'复核状态可查');
+  assert.ok(currentPlan(db(),user,'fitness'),'单次部分完成不废弃健身方案（反馈保留评估）');
+  assert.equal(plans(user,'fitness','needs_review',db()).length,0,'单次未完成不自动标记 needs_review');
   // 2) 未完成 → work 无已确认方案时静默跳过（不报错）；同日其他域不受影响
   d3=lifeMod.overview(user,next).day;
   lifeMod.updateDay(user,{day:next,version:d3.version,operation:'feedback',data:{item_id:workPlanItem.id,status:'skipped',actual_minutes:null,note:'临时开会'}},++t);
