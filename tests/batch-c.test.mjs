@@ -151,6 +151,8 @@ test('C: 整体验收——部分资料提问/换执行者接续/数日沿用/�
   assert.ok(d4.analyses.includes('analysis.fitness'),'调整请求触发健身域重算');
   assert.ok(!d4.analyses.includes('analysis.work')&&!d4.analyses.includes('analysis.diet'),'其他域不受影响沿用');
   const st=domainState(user,{day:'2026-10-28'},db());
+  assert.ok(st.current.every((x,i,a)=>a.findIndex((y)=>y.domain===x.domain)===i),'current 每域仅一条（最新判断，不含过期评估）');
+  assert.equal(st.current.filter((x)=>x.domain==='fitness').length,1,'current fitness 唯一');
   const fit=st.domains.find((x)=>x.domain==='fitness');
   assert.equal(fit.state,'adjust');
   assert.ok(fit.signals.some((x)=>x.source==='adjust'),'调整信号可查询');

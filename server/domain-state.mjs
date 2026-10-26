@@ -87,6 +87,10 @@ export function domainState(user,{day,domain}={},d=db()){
  else cond.push('day=(SELECT MAX(day) FROM domain_state_log WHERE user_id=?)'),args.push(user);
  const rows=d.prepare(`SELECT * FROM domain_state_log WHERE ${cond.join(' AND ')} ORDER BY domain`).all(...args).map(r=>({day:r.day,domain:r.domain,state:r.state,decision:r.decision,reasons:JSON.parse(r.reasons),signals:JSON.parse(r.signals||'[]'),missing:JSON.parse(r.missing),plan_version:r.plan_version,plan_review_at:r.plan_review_at,pending_adjustments:r.pending_adjustments,created_at:r.created_at}));
  const curDay=d.prepare('SELECT MAX(day) day FROM domain_state_log WHERE user_id=?').get(user).day;
- const current=curDay?d.prepare(`SELECT * FROM domain_state_log WHERE user_id=? AND day=?${domain?' AND domain=?':''} ORDER BY domain`).all(user,curDay,...(domain?[domain]:[])).map(r=>({day:r.day,domain:r.domain,state:r.state,decision:r.decision,reasons:JSON.parse(r.reasons),signals:JSON.parse(r.signals||'[]'),missing:JSON.parse(r.missing),plan_version:r.plan_version,plan_review_at:r.plan_review_at,pending_adjustments:r.pending_adjustments,created_at:r.created_at})):[];
+ // current = 最近生成日每域最新一条评估（同一生成日可能多次评估，按 created_at 取每域最新，避免客户端读到过期判断）
+ const current=curDay?(()=>{const all=d.prepare(`SELECT * FROM domain_state_log WHERE user_id=? AND day=?${domain?' AND domain=?':''} ORDER BY domain,created_at DESC`).all(user,curDay,...(domain?[domain]:[]));
+  const seen=new Set(),out=[];
+  for(const r of all){if(seen.has(r.domain))continue;seen.add(r.domain);out.push({day:r.day,domain:r.domain,state:r.state,decision:r.decision,reasons:JSON.parse(r.reasons),signals:JSON.parse(r.signals||'[]'),missing:JSON.parse(r.missing),plan_version:r.plan_version,plan_review_at:r.plan_review_at,pending_adjustments:r.pending_adjustments,created_at:r.created_at})}
+  return out;})():[];
  return {current,domains:rows,note:'current 为最近一次生成日的领域状态（当前判断，服务器确定最新）；domains 为查询结果（不传 day=最近一天，传 day=该日历史）；历史完整保留在 domain_state_log，可按 day/domain 回溯。当日全局异常信号见 daily context 的 day.audit.anomalies（input_drop / energy_drop / repeated_skip / time_overrun）；每态 signals 记录触发来源与判断规则'};
 }
