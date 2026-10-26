@@ -30,6 +30,8 @@ npm test
 
 仅一个所有者；没有公众注册、邮件找回、MFA 或自动同步飞书。已保留稳定记录 ID、版本号、修改时间和删除标记。会员数据需手动或授权 AI 录入，未接入各平台查询余额。
 
-演示模式不写入数据库。标记还款为已还不会自动扣减现金或债务本金。JSON 导出仅含业务记录，完整备份需备份 SQLite。
+演示模式不写入数据库。标记还款为已还不会自动扣减现金或债务本金。JSON 导出仅含业务记录，完整备份需备份 SQLite（`scripts/backup.mjs` 在线备份，恢复后按 `tests/backup.test.mjs` 的 12 表精确比对核对）。
+
+版本区分：`GET /api/agent/v1/health` 返回 `app_version`（应用包版本）与 `protocol_version`（协议版本）两个字段；AI 按 `ai-guide.md` 接入时以 `protocol_version` 判断契约兼容。
 
 本目录是独立迁移版本，原 Sites 站点及其数据未改变；没有自动迁移原站真实数据。上线前需确认旧数据迁移范围。

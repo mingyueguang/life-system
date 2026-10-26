@@ -1,3 +1,13 @@
+# 1.8.0 · 2026-10-27（批次 C：接口当前/历史分离 / 设置入口 / 版本区分 / 备份恢复与整体验收）
+
+- **接口"当前状态 vs 历史判断"分离（第六步）**：`GET /api/v1/domain-state` 返回 `{current,domains}`——`current` 为服务器按最近一次生成日判定的最新四态（仅当前判断），`domains` 为查询结果（含历史记录与 signals/pending_adjustments 明细，按日可查）；`GET /api/v1/plans` 返回 `{current,plans}`——`current` 为各域 `currentPlan` 有效方案（confirmed 且未过复核期），`plans` 为全部版本历史。客户端 KPI/面板只消费 `current`，历史判断仍可完整追溯。
+- **设置入口恢复（正常导航可访问）**：新增 `GET /api/agent/v1/settings`（返回 `life_settings`，AI/网站同源）；网站"今日方案与提醒"设置表单补齐"异常阈值与结转"区——三域复核周期（`domain_review_days`）、超时/精力骤降阈值与未完成结转开关（`overrun_factor`/`energy_drop_threshold`/`skip_carryover`，1.4.2 已有字段补全 UI）。
+- **应用版本与协议版本区分**：`GET /api/agent/v1/health` 改为 `{app_version:"1.8.0",protocol_version:"1.8.0"}`（`app_version` 来自应用包版本，`protocol_version` 来自 `server/protocol.mjs`；不再使用含义模糊的 `release`）。系统面板 KPI 同步改用两字段；schema 文档与 ai-guide 同步。
+- **备份恢复精确比对（可演练）**：`scripts/backup.mjs` 使用 SQLite 在线 `backup()`（不复制使用中的主库文件），关闭在线连接后以备份文件重开；`tests/backup.test.mjs` 对 12 张表（users/api_keys/executors/life_settings/records/domain_plans/plan_adjustments/daily_days/agent_jobs/publish_receipts/domain_state_log/raw_inputs）做全量 JSON 精确比对 + 恢复后服务可查断言，作为备份恢复演练基准。
+- **整体验收串场（六步验收清单自动化为测试）**：`tests/batch-c.test.mjs` 单文件 9 阶段串场——部分资料提问→AI 接续不重复问→换执行者接续→三域具条件→连续数日沿用→改可用时间+执行中分析→依赖更新拒绝过期结果→单次未完成不废弃→调整请求只分析受影响域（原因/处理人不丢失）→确认后发布（部分成功只补缺失、重复确认不新建批次）→回传丢失 active 恢复（执行者更换拿不到他人任务、重启后状态保持）→同输入复用不重复派发分析、不推进版本。
+- 协议版本 1.8.0（package.json / package-lock / schema protocolVersion / health app_version+protocol_version / protocol.mjs / ai-guide.md 六处同步）；`app_version` 与 `protocol_version` 解耦声明。
+- 测试：新增备份精确比对 1 项 + 整体验收串场 1 项；集成测试 health 版本断言同步（release→app_version+protocol_version）。28/28 通过，typecheck 通过。部署交接（DEPLOYMENT.md）补充恢复后 12 表核对指引。
+
 # 1.7.0 · 2026-10-27（批次 B：状态驱动分析 / 统一次日统筹与外部执行）
 
 - **第四步：状态驱动分析（domain_state 四态 + 信号持久化）**：`assessDomain` 按信号规则确定性推导四态——关键资料缺失→`insufficient/analyze`；待处理调整请求→`adjust/analyze`；无有效方案或复核到期→`adjust/analyze`；持久偏离（重复跳过 / 按域超时）→`adjust/analyze`（只影响受影响领域）；昨日未完成结转→`attention/reuse`；精力骤降等软信号→`attention/reuse`；否则 `normal/reuse`。判定顺序先于旧的 needs_review 启发式。每条记录写入 `signals`（来源/规则/结果/说明）与 `pending_adjustments`，`GET /api/v1/domain-state` 可查；单次未完成只结转不废弃领域方案（原阶段 6"未完成即标 needs_review"逻辑删除，由次日状态机统一决定沿用/重算）。

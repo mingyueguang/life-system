@@ -40,6 +40,10 @@ docker compose cp app:/data/backups/life-backup.sqlite ./life-backup.sqlite
 
 定期把备份取出卷外，异地保存并限制访问。恢复前停服务并备份现有数据库，然后用备份替换 DATABASE_PATH 文件，清理旧库的 -wal/-shm 侧文件，文件归 UID/GID 1001:1001。启动后核对数据。迁移域名时修改 APP_ORIGIN 和 AI 客户端地址。
 
+恢复后核对：`tests/backup.test.mjs` 是备份恢复演练基准——对 12 张表（users / api_keys / executors / life_settings / records / domain_plans / plan_adjustments / daily_days / agent_jobs / publish_receipts / domain_state_log / raw_inputs）做全量 JSON 精确比对，并断言恢复后的服务可查（记录/版本/方案/任务/回执一致）。还原备份后先跑一次 `node --test tests/backup.test.mjs` 与本应用接口抽查（health、domain-state current、plans current、settings、publish-receipts），再对外提供服务。
+
+版本区分：`GET /api/agent/v1/health` 返回 `app_version`（应用包版本）与 `protocol_version`（`server/protocol.mjs`）两个字段；升级部署后核对两字段均为目标版本，不再使用旧 `release` 字段。
+
 ## 忘记密码
 
 服务器管理员可通过标准输入运行 `scripts/reset-password.mjs`，新密码至少 12 字符。会撤销所有浏览器会话和 AI 密钥。不要把密码放命令参数。

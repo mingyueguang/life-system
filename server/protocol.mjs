@@ -1,6 +1,6 @@
 import {intakeOutputSchema} from './intake.mjs';
 import {planSchema,analysisSchema,fitnessPlanSchema,dietPlanSchema,reviewSchema,publishSchema} from './life.mjs';
-export const protocolVersion='1.7.0';
+export const protocolVersion='1.8.0';
 // Derive the wire schema from the same validators that accept results.
 export function jsonSchema(s){const d=s._def;switch(d.typeName){
  case 'ZodObject':{const shape=s.shape;return {type:'object',properties:Object.fromEntries(Object.entries(shape).map(([k,v])=>[k,jsonSchema(v)])),required:Object.entries(shape).filter(([,v])=>!v.isOptional()).map(([k])=>k),additionalProperties:d.unknownKeys!=='strict'}}
